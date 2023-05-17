@@ -29,7 +29,7 @@ Usage of ./go-clam:
 
 ## Example Usage
 ```Go
-klarsen@Mac-Book-Pro2 go-clam % go run main.go -d /Users/klarsen/Downloads/last_grpn/files
+./go-clam -d /Users/klarsen/Downloads/last_grpn/files
 [*] Running freshclam
 Current working dir is /usr/local/var/lib/clamav/
 Loaded freshclam.dat:
