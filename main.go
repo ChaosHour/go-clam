@@ -59,8 +59,8 @@ func freshclamCommand() *exec.Cmd {
 // define freshclam function and print the output to the console
 func freshclamCommand() *exec.Cmd {
 	cmd := exec.Command(*freshclamPath, "-v")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	//cmd.Stdout = os.Stdout
+	//cmd.Stderr = os.Stderr
 	return cmd
 }
 
