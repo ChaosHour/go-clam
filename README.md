@@ -31,30 +31,7 @@ Usage of ./go-clam:
 ```Go
 ./go-clam -d /Users/klarsen/Downloads/last_grpn/files
 [*] Running freshclam
-Current working dir is /usr/local/var/lib/clamav/
-Loaded freshclam.dat:
-  version:    1
-  uuid:       343634e5-38b0-4adf-b642-e9f18792b697
-ClamAV update process started at Wed May 17 15:48:11 2023
-Current working dir is /usr/local/var/lib/clamav/
-Querying current.cvd.clamav.net
-TTL: 305
-fc_dns_query_update_info: Software version from DNS: 0.103.8
-Current working dir is /usr/local/var/lib/clamav/
-check_for_new_database_version: Local copy of daily found: daily.cld.
-query_remote_database_version: daily.cvd version from DNS: 26910
-daily.cld database is up-to-date (version: 26910, sigs: 2034858, f-level: 90, builder: raynman)
-fc_update_database: daily.cld already up-to-date.
-Current working dir is /usr/local/var/lib/clamav/
-check_for_new_database_version: Local copy of main found: main.cvd.
-query_remote_database_version: main.cvd version from DNS: 62
-main.cvd database is up-to-date (version: 62, sigs: 6647427, f-level: 90, builder: sigmgr)
-fc_update_database: main.cvd already up-to-date.
-Current working dir is /usr/local/var/lib/clamav/
-check_for_new_database_version: Local copy of bytecode found: bytecode.cvd.
-query_remote_database_version: bytecode.cvd version from DNS: 334
-bytecode.cvd database is up-to-date (version: 334, sigs: 91, f-level: 90, builder: anvilleg)
-fc_update_database: bytecode.cvd already up-to-date.
+
 [*] Scanning directory: /Users/klarsen/Downloads/last_grpn/files
 [*] Found 8 files
 [*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/packer
