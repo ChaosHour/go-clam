@@ -10,6 +10,9 @@ A go wrapper around ClamAV
 Still testing and modifying the code.
 
 
+## Dependencies
+- ClamAV `brew install clamav`
+
 
 ## Install
 - go install github.com/ChaosHour/go-clam@latest
