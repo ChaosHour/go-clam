@@ -121,6 +121,9 @@ func main() {
 	threadChan := make(chan struct{}, maxThreads)
 	defer close(threadChan)
 
+	// create the mutex
+	var resultsMutex sync.Mutex
+
 	// loop over each file and execute a clamscan command in a separate goroutine
 	results := make(map[string]string)
 	for _, file := range files {
@@ -141,7 +144,11 @@ func main() {
 			}
 			fmt.Println(yellow("[*]"), string(output))
 			// add the result to the map
+			//results[file] = string(output)
+			// lock the mutex before writing to the map
+			resultsMutex.Lock()
 			results[file] = string(output)
+			resultsMutex.Unlock()
 		}(file)
 	}
 
