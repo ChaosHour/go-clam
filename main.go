@@ -126,13 +126,19 @@ func main() {
 			if err != nil {
 				fmt.Println(red("[!]"), "Error scanning file:", file, "-", err.Error())
 			}
-			fmt.Println(yellow("[*]"), string(output))
 			// add the result to the map
 			results.Store(file, string(output))
 		}(file)
 	}
 
 	wg.Wait()
+
+	// print the results to the console
+	results.Range(func(key, value interface{}) bool {
+		fmt.Println(yellow("[*]"), "Results for file:", key)
+		fmt.Println(string(value.(string)))
+		return true
+	})
 
 	// print when the scan has been completed to the console
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
