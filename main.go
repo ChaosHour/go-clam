@@ -40,27 +40,12 @@ func checkDir(dir string) error {
 
 // get the list of files in the directory
 func getFiles(dir string) ([]string, error) {
-	var files []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
-	return files, err
+	return filepath.Glob(filepath.Join(dir, "*"))
 }
 
-/*
-// define freshclam function and print the output to the console
-func freshclamCommand() *exec.Cmd {
-	return exec.Command(*freshclamPath, "-v")
-}
-*/
 // define freshclam function and print the output to the console
 func freshclamCommand() *exec.Cmd {
 	cmd := exec.Command(*freshclamPath, "-v")
-	//cmd.Stdout = os.Stdout
-	//cmd.Stderr = os.Stderr
 	return cmd
 }
 
@@ -86,15 +71,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	/*
-		// run freshclam and print the output to the console
-		fmt.Println(blue("[*]"), "Running freshclam")
-		cmd := freshclamCommand()
-		cmd.Run()
-
-	*/
-
-	// run freshclam and print the output to the console
 	fmt.Println(blue("[*]"), ("Running freshclam"))
 	cmd := freshclamCommand()
 	if err := cmd.Run(); err != nil {
@@ -117,15 +93,12 @@ func main() {
 	var wg sync.WaitGroup
 	// set the number of threads based on the number of cores available getThreads()
 	maxThreads := getThreads()
-	//maxThreads := 4
 	threadChan := make(chan struct{}, maxThreads)
-	defer close(threadChan)
 
-	// create the mutex
-	var resultsMutex sync.Mutex
+	// create the sync.Map
+	results := new(sync.Map)
 
 	// loop over each file and execute a clamscan command in a separate goroutine
-	results := make(map[string]string)
 	for _, file := range files {
 		threadChan <- struct{}{}
 		wg.Add(1)
@@ -139,16 +112,11 @@ func main() {
 			cmd := clamscanCommand(file)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
-				fmt.Println(red("[!]"), "Error:", err.Error())
-				os.Exit(1)
+				fmt.Println(red("[!]"), "Error scanning file:", file, "-", err.Error())
 			}
 			fmt.Println(yellow("[*]"), string(output))
 			// add the result to the map
-			//results[file] = string(output)
-			// lock the mutex before writing to the map
-			resultsMutex.Lock()
-			results[file] = string(output)
-			resultsMutex.Unlock()
+			results.Store(file, string(output))
 		}(file)
 	}
 
@@ -156,4 +124,11 @@ func main() {
 	wg.Wait()
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
 
+	// print the results
+	results.Range(func(key, value interface{}) bool {
+		fmt.Println(key, value)
+		return true
+	})
+	// print the results of the scan to the console
+	fmt.Println(yellow("[*]"), "Finished scanning directory")
 }
