@@ -60,10 +60,7 @@ func getHomeDir() string {
 
 // define the clamscan command
 func clamscanCommand(file string) *exec.Cmd {
-	// return exec.Command(*clamscanPath, "--no-summary", file)
-	// use the homedir function to get the users home directory and add that as the exclude directory
 	return exec.Command(*clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
-
 }
 
 // create a function to get how many cores are available on the system and set the number of threads to half of that number
@@ -119,28 +116,26 @@ func main() {
 				<-threadChan
 				wg.Done()
 			}()
-			// run clamscan in parallel and print the output to the console
+			// run clamscan in parallel and print the output to the console. List the files to be scanned and dispplay the results
 			fmt.Println(blue("[*]"), "Scanning file:", file)
 			cmd := clamscanCommand(file)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
 				fmt.Println(red("[!]"), "Error scanning file:", file, "-", err.Error())
 			}
+			fmt.Println(yellow("[*]"), string(output))
 			// add the result to the map
 			results.Store(file, string(output))
 		}(file)
 	}
 
+	// wait for all the goroutines to finish
 	wg.Wait()
-
-	// print the results to the console
-	results.Range(func(key, value interface{}) bool {
-		fmt.Println(yellow("[*]"), "Results for file:", key)
-		fmt.Println(string(value.(string)))
-		return true
-	})
-
-	// print when the scan has been completed to the console
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
 
+	// print the results
+	//results.Range(func(key, value interface{}) bool {
+	//	fmt.Println(key, value)
+	//	return true
+	//})
 }
