@@ -15,7 +15,7 @@ Still testing and modifying the code.
 
 
 ## Install
-- go install github.com/ChaosHour/go-clam@feature/faster_clam
+- go build -o ~/go/bin/go-clam
 
 ## Usage
 
@@ -32,33 +32,27 @@ Usage of ./go-clam:
 
 ## Example Usage
 ```Go
-./go-clam -d /Users/klarsen/Downloads/last_grpn/files
+klarsen@Mac-Book-Pro2 go-clam % go run main.go -d ~/Downloads/last_grpn/files
 [*] Running freshclam
 [*] Scanning directory: /Users/klarsen/Downloads/last_grpn/files
-[*] Found 8 files
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/packer
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/Oracle_VM_VirtualBox_Extension_Pack-6.1.34 (1).vbox-extpack
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/Oracle_VM_VirtualBox_Extension_Pack-6.1.34.vbox-extpack
+[*] Found 6 files
+[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/terragrunt_darwin_amd64
+[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/VirtualBox-6.1.34-150636-OSX.dmg.zip
+[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/packer.zip
+[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/packer_1.8.2_darwin_amd64.zip
+[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/Docker.dmg.zip
 [*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/.DS_Store
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/Docker.dmg
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/VirtualBox-6.1.34-150636-OSX.dmg
+[*] /Users/klarsen/Downloads/last_grpn/files/VirtualBox-6.1.34-150636-OSX.dmg.zip: OK
+
 [*] /Users/klarsen/Downloads/last_grpn/files/.DS_Store: OK
 
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/packer_1.8.2_darwin_amd64.zip
-[*] /Users/klarsen/Downloads/last_grpn/files/VirtualBox-6.1.34-150636-OSX.dmg: OK
-
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/terragrunt_darwin_amd64
-[*] /Users/klarsen/Downloads/last_grpn/files/packer: OK
-
-[*] /Users/klarsen/Downloads/last_grpn/files/Docker.dmg: OK
-
-[*] /Users/klarsen/Downloads/last_grpn/files/Oracle_VM_VirtualBox_Extension_Pack-6.1.34.vbox-extpack: OK
-
-[*] /Users/klarsen/Downloads/last_grpn/files/Oracle_VM_VirtualBox_Extension_Pack-6.1.34 (1).vbox-extpack: OK
+[*] /Users/klarsen/Downloads/last_grpn/files/Docker.dmg.zip: OK
 
 [*] /Users/klarsen/Downloads/last_grpn/files/terragrunt_darwin_amd64: OK
 
 [*] /Users/klarsen/Downloads/last_grpn/files/packer_1.8.2_darwin_amd64.zip: OK
+
+[*] /Users/klarsen/Downloads/last_grpn/files/packer.zip: OK
 
 [*] Finished scanning directory
 ```
