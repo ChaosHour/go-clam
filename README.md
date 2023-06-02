@@ -15,7 +15,7 @@ Still testing and modifying the code.
 
 
 ## Install
-- go install github.com/ChaosHour/go-clam@latest
+- go install github.com/ChaosHour/go-clam@feature/faster_clam
 
 ## Usage
 
