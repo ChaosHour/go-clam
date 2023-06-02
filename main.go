@@ -134,7 +134,7 @@ func main() {
 
 	// wait for all the goroutines to finish
 	wg.Wait()
-	fmt.Println(yellow("[*]"), "Finished scanning directory")
+	//fmt.Println(yellow("[*]"), "Finished scanning directory")
 
 	// print the results
 	results.Range(func(key, value interface{}) bool {
