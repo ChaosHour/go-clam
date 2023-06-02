@@ -119,7 +119,7 @@ func main() {
 				<-threadChan
 				wg.Done()
 			}()
-			// run clamscan in parallel and print the output to the console. List the files to be scanned and dispplay the results
+			// run clamscan in parallel and print the output to the console
 			fmt.Println(blue("[*]"), "Scanning file:", file)
 			cmd := clamscanCommand(file)
 			output, err := cmd.CombinedOutput()
@@ -132,15 +132,9 @@ func main() {
 		}(file)
 	}
 
-	// wait for all the goroutines to finish
 	wg.Wait()
-	//fmt.Println(yellow("[*]"), "Finished scanning directory")
 
-	// print the results
-	results.Range(func(key, value interface{}) bool {
-		fmt.Println(key, value)
-		return true
-	})
-	// print the results of the scan to the console
+	// print when the scan has been completed to the console
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
+
 }
