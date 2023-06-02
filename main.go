@@ -49,9 +49,21 @@ func freshclamCommand() *exec.Cmd {
 	return cmd
 }
 
+// Get the users home directory
+func getHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Error getting home directory: %v", err)
+	}
+	return home
+}
+
 // define the clamscan command
 func clamscanCommand(file string) *exec.Cmd {
-	return exec.Command(*clamscanPath, "--no-summary", file)
+	// return exec.Command(*clamscanPath, "--no-summary", file)
+	// use the homedir function to get the users home directory and add that as the exclude directory
+	return exec.Command(*clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
+
 }
 
 // create a function to get how many cores are available on the system and set the number of threads to half of that number
