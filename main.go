@@ -18,8 +18,8 @@ import (
 // define the flags
 var (
 	dir           = flag.String("d", "", "Directory to scan")
-	clamscanPath  = flag.String("clamscan", "/usr/local/bin/clamscan", "Path to clamscan binary")
-	freshclamPath = flag.String("freshclam", "/usr/local/bin/freshclam", "Path to freshclam binary")
+	clamscanPath  = flag.String("clamscan", "clamscan", "Path to clamscan binary")
+	freshclamPath = flag.String("freshclam", "freshclam", "Path to freshclam binary")
 )
 
 // define the colors
