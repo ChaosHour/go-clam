@@ -30,19 +30,6 @@ var (
 	yellow = color.New(color.FgYellow).SprintFunc()
 )
 
-// check and make sure the directory exists
-func checkDir(dir string) error {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-// get the list of files in the directory
-func getFiles(dir string) ([]string, error) {
-	return filepath.Glob(filepath.Join(dir, "*"))
-}
-
 // define freshclam function and print the output to the console
 func freshclamCommand() *exec.Cmd {
 	cmd := exec.Command(*freshclamPath, "-v")
@@ -69,25 +56,41 @@ func getThreads() int {
 	if cores < 1 {
 		cores = 1
 	}
+	fmt.Println("Number of CPU cores:", runtime.NumCPU())
+	fmt.Println("Number of threads to use:", cores)
 	return cores
 }
 
 func main() {
 	flag.Parse()
 
-	if err := checkDir(*dir); err != nil {
-		fmt.Println(red("[!]"), "Error:", err.Error())
+	// change the current working directory to the directory to scan
+	if *dir != "" {
+		err := os.Chdir(*dir)
+		if err != nil {
+			fmt.Println(red("[!]"), "Error changing directory:", err.Error())
+			os.Exit(1)
+		}
+	}
+
+	// get the current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Println(red("[!]"), "Error getting current working directory:", err.Error())
 		os.Exit(1)
 	}
 
-	fmt.Println(blue("[*]"), ("Running freshclam"))
-	cmd := freshclamCommand()
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("Error running freshclam: %v", err)
-	}
-
 	// get the list of files in the directory
-	files, err := getFiles(*dir)
+	var files []string
+	err = filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() {
+			files = append(files, path)
+		}
+		return nil
+	})
 	if err != nil {
 		fmt.Println(red("[!]"), "Error:", err.Error())
 		os.Exit(1)
@@ -95,47 +98,45 @@ func main() {
 
 	numFiles := len(files)
 
-	fmt.Println(yellow("[*]"), "Scanning directory:", *dir)
+	fmt.Println(yellow("[*]"), "Scanning directory:", cwd)
 	fmt.Println(yellow("[*]"), "Found", numFiles, "files")
 
-	// run the clamscan in parallel
-	var wg sync.WaitGroup
-	// set the number of threads based on the number of cores available getThreads()
+	// set the number of threads based on the number of cores available
 	maxThreads := getThreads()
 	threadChan := make(chan struct{}, maxThreads)
 
-	// create the sync.Map
-	results := new(sync.Map)
+	// create a wait group to wait for all the goroutines to finish
+	var wg sync.WaitGroup
+	wg.Add(numFiles)
 
-	// loop over each file and execute a clamscan command in a separate goroutine
+	// scan each file in the directory in parallel
 	for _, file := range files {
-		threadChan <- struct{}{}
-		wg.Add(1)
+		threadChan <- struct{}{} // acquire a thread
 		go func(file string) {
 			defer func() {
-				<-threadChan
+				<-threadChan // release the thread
 				wg.Done()
 			}()
-			// run clamscan in parallel and print the output to the console. List the files to be scanned and dispplay the results
-			fmt.Println(blue("[*]"), "Scanning file:", file)
+			// run clamscan on the file
 			cmd := clamscanCommand(file)
 			output, err := cmd.CombinedOutput()
 			if err != nil {
-				fmt.Println(red("[!]"), "Error scanning file:", file, "-", err.Error())
+				fmt.Println(red("[!]"), "Error:", err.Error())
+			} else {
+				fmt.Printf(yellow("[*] Scanning file %s\n"), file)
+				if cmd.ProcessState.ExitCode() == 0 {
+					fmt.Println(green("[+]"), "File is ok")
+				} else if cmd.ProcessState.ExitCode() == 1 {
+					fmt.Println(red("[-]"), "File is infected")
+				} else {
+					fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+				}
+				fmt.Println(string(output))
 			}
-			fmt.Println(yellow("[*]"), string(output))
-			// add the result to the map
-			results.Store(file, string(output))
 		}(file)
 	}
 
 	// wait for all the goroutines to finish
 	wg.Wait()
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
-
-	// print the results
-	//results.Range(func(key, value interface{}) bool {
-	//	fmt.Println(key, value)
-	//	return true
-	//})
 }
