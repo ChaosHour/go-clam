@@ -103,38 +103,44 @@ func main() {
 
 	// set the number of threads based on the number of cores available
 	maxThreads := getThreads()
-	threadChan := make(chan struct{}, maxThreads)
+
+	// create a channel to send files to the worker pool
+	fileChan := make(chan string, numFiles)
 
 	// create a wait group to wait for all the goroutines to finish
 	var wg sync.WaitGroup
-	wg.Add(numFiles)
 
-	// scan each file in the directory in parallel
-	for _, file := range files {
-		threadChan <- struct{}{} // acquire a thread
-		go func(file string) {
-			defer func() {
-				<-threadChan // release the thread
-				wg.Done()
-			}()
-			// run clamscan on the file
-			cmd := clamscanCommand(file)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Println(red("[!]"), "Error:", err.Error())
-			} else {
-				fmt.Printf(yellow("[*] Scanning file %s\n"), file)
-				if cmd.ProcessState.ExitCode() == 0 {
-					fmt.Println(green("[+]"), "File is ok")
-				} else if cmd.ProcessState.ExitCode() == 1 {
-					fmt.Println(red("[-]"), "File is infected")
+	// start the worker pool
+	for i := 0; i < maxThreads; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range fileChan {
+				// run clamscan on the file
+				cmd := clamscanCommand(file)
+				output, err := cmd.CombinedOutput()
+				if err != nil {
+					fmt.Println(red("[!]"), "Error:", err.Error())
 				} else {
-					fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+					fmt.Printf(yellow("[*] Scanning file %s\n"), file)
+					if cmd.ProcessState.ExitCode() == 0 {
+						fmt.Println(green("[+]"), "File is ok")
+					} else if cmd.ProcessState.ExitCode() == 1 {
+						fmt.Println(red("[-]"), "File is infected")
+					} else {
+						fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+					}
+					fmt.Println(string(output))
 				}
-				fmt.Println(string(output))
 			}
-		}(file)
+		}()
 	}
+
+	// send files to the worker pool
+	for _, file := range files {
+		fileChan <- file
+	}
+	close(fileChan)
 
 	// wait for all the goroutines to finish
 	wg.Wait()
