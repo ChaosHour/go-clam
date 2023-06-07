@@ -1,7 +1,7 @@
 # Use the official Go image as the base image
 FROM golang:latest
 
-# Set the working directory inside the container
+# Set the Current Working Directory inside the container
 WORKDIR /go-clam
 
 # Copy the source code into the container
@@ -15,5 +15,5 @@ RUN apt-get update && \
 # Build the Go binary
 RUN go build -o go-clam .
 
-# Set the command to run when the container starts
-CMD ["./go-clam", "-d", "/"]
+# set the entrypoint
+ENTRYPOINT ["./go-clam"]
