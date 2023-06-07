@@ -32,27 +32,34 @@ Usage of ./go-clam:
 
 ## Example Usage
 ```Go
-klarsen@Mac-Book-Pro2 go-clam % go run main.go -d ~/Downloads/last_grpn/files
-[*] Running freshclam
+klarsen@Mac-Book-Pro2 ~ % go-clam -d ~/Downloads/last_grpn/files
 [*] Scanning directory: /Users/klarsen/Downloads/last_grpn/files
 [*] Found 6 files
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/terragrunt_darwin_amd64
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/VirtualBox-6.1.34-150636-OSX.dmg.zip
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/packer.zip
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/packer_1.8.2_darwin_amd64.zip
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/Docker.dmg.zip
-[*] Scanning file: /Users/klarsen/Downloads/last_grpn/files/.DS_Store
-[*] /Users/klarsen/Downloads/last_grpn/files/VirtualBox-6.1.34-150636-OSX.dmg.zip: OK
+Number of CPU cores: 12
+Number of threads to use: 6
+[*] Scanning file .DS_Store
+[+] File is ok
+/Users/klarsen/Downloads/last_grpn/files/.DS_Store: OK
 
-[*] /Users/klarsen/Downloads/last_grpn/files/.DS_Store: OK
+[*] Scanning file Docker.dmg.zip
+[+] File is ok
+/Users/klarsen/Downloads/last_grpn/files/Docker.dmg.zip: OK
 
-[*] /Users/klarsen/Downloads/last_grpn/files/Docker.dmg.zip: OK
+[*] Scanning file VirtualBox-6.1.34-150636-OSX.dmg.zip
+[+] File is ok
+/Users/klarsen/Downloads/last_grpn/files/VirtualBox-6.1.34-150636-OSX.dmg.zip: OK
 
-[*] /Users/klarsen/Downloads/last_grpn/files/terragrunt_darwin_amd64: OK
+[*] Scanning file terragrunt_darwin_amd64
+[+] File is ok
+/Users/klarsen/Downloads/last_grpn/files/terragrunt_darwin_amd64: OK
 
-[*] /Users/klarsen/Downloads/last_grpn/files/packer_1.8.2_darwin_amd64.zip: OK
+[*] Scanning file packer.zip
+[+] File is ok
+/Users/klarsen/Downloads/last_grpn/files/packer.zip: OK
 
-[*] /Users/klarsen/Downloads/last_grpn/files/packer.zip: OK
+[*] Scanning file packer_1.8.2_darwin_amd64.zip
+[+] File is ok
+/Users/klarsen/Downloads/last_grpn/files/packer_1.8.2_darwin_amd64.zip: OK
 
 [*] Finished scanning directory
 ```
