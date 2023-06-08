@@ -64,6 +64,16 @@ func getThreads() int {
 func main() {
 	flag.Parse()
 
+	// run freshclam to update the virus definitions. Don't print the output to the console
+	fmt.Println(yellow("[*]"), "Updating virus definitions")
+	cmd := freshclamCommand()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Println(red("[!]"), "Error:", err.Error())
+	} else {
+		fmt.Println(string(output))
+	}
+
 	// change the current working directory to the directory to scan
 	if *dir != "" {
 		err := os.Chdir(*dir)
@@ -104,45 +114,56 @@ func main() {
 	// set the number of threads based on the number of cores available
 	maxThreads := getThreads()
 
-	// create a channel to send files to the worker pool
-	fileChan := make(chan string, numFiles)
+	// set the batch size to 1000 files
+	batchSize := 100
 
 	// create a wait group to wait for all the goroutines to finish
 	var wg sync.WaitGroup
 
-	// start the worker pool
-	for i := 0; i < maxThreads; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for file := range fileChan {
-				// run clamscan on the file
-				cmd := clamscanCommand(file)
-				output, err := cmd.CombinedOutput()
-				if err != nil {
-					fmt.Println(red("[!]"), "Error:", err.Error())
-				} else {
-					fmt.Printf(yellow("[*] Scanning file %s\n"), file)
-					if cmd.ProcessState.ExitCode() == 0 {
-						fmt.Println(green("[+]"), "File is ok")
-					} else if cmd.ProcessState.ExitCode() == 1 {
-						fmt.Println(red("[-]"), "File is infected")
+	// process files in batches
+	for i := 0; i < numFiles; i += batchSize {
+		// create a channel with a buffer size of maxThreads
+		fileChan := make(chan string, maxThreads)
+
+		// start the worker pool
+		for i := 0; i < maxThreads; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for file := range fileChan {
+					// run clamscan on the file
+					cmd := clamscanCommand(file)
+					output, err := cmd.CombinedOutput()
+					if err != nil {
+						fmt.Println(red("[!]"), "Error:", err.Error())
 					} else {
-						fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+						fmt.Printf(yellow("[*] Scanning file %s\n"), file)
+						if cmd.ProcessState.ExitCode() == 0 {
+							fmt.Println(green("[+]"), "File is ok")
+						} else if cmd.ProcessState.ExitCode() == 1 {
+							fmt.Println(red("[-]"), "File is infected")
+						} else {
+							fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+						}
+						fmt.Println(string(output))
 					}
-					fmt.Println(string(output))
 				}
-			}
-		}()
+			}()
+		}
+
+		// send files to the worker pool
+		end := i + batchSize
+		if end > numFiles {
+			end = numFiles
+		}
+		for _, file := range files[i:end] {
+			fileChan <- file
+		}
+		close(fileChan)
+
+		// wait for all the goroutines to finish
+		wg.Wait()
 	}
 
-	// send files to the worker pool
-	for _, file := range files {
-		fileChan <- file
-	}
-	close(fileChan)
-
-	// wait for all the goroutines to finish
-	wg.Wait()
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
 }
