@@ -137,11 +137,15 @@ func main() {
 						if index > batchSize {
 							index = batchSize
 						}
-						fileIndex := i + index
+						//fileIndex := i + index
 
 						// print the progress
+						fmt.Println()
+						fmt.Println()
 						bar.Add(1)
-						fmt.Printf(yellow("[*] Scanning file %d of %d: %s\n"), fileIndex, numFiles, file)
+						fmt.Println()
+						fmt.Println()
+						fmt.Printf(yellow("[*] Scanning file %s\n"), file)
 
 						// print the scan results
 						if cmd.ProcessState.ExitCode() == 0 {
