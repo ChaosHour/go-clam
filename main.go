@@ -107,7 +107,7 @@ func main() {
 	maxThreads := getThreads()
 
 	// set the batch size to 1000 files
-	batchSize := 2000
+	batchSize := 1000
 
 	// create a wait group to wait for all the goroutines to finish
 	var wg sync.WaitGroup
