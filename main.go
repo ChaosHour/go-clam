@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/fatih/color"
+	"github.com/schollz/progressbar/v3"
 )
 
 // define the flags
@@ -91,16 +92,7 @@ func main() {
 	}
 
 	// get the list of files in the directory
-	var files []string
-	err = filepath.Walk(".", func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
+	files, err := filepath.Glob("*")
 	if err != nil {
 		fmt.Println(red("[!]"), "Error:", err.Error())
 		os.Exit(1)
@@ -120,13 +112,16 @@ func main() {
 	// create a wait group to wait for all the goroutines to finish
 	var wg sync.WaitGroup
 
+	// create a progress bar
+	bar := progressbar.Default(int64(numFiles))
+
 	// process files in batches
 	for i := 0; i < numFiles; i += batchSize {
 		// create a channel with a buffer size of maxThreads
 		fileChan := make(chan string, maxThreads)
 
 		// start the worker pool
-		for i := 0; i < maxThreads; i++ {
+		for j := 0; j < maxThreads; j++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -137,15 +132,27 @@ func main() {
 					if err != nil {
 						fmt.Println(red("[!]"), "Error:", err.Error())
 					} else {
-						fmt.Printf(yellow("[*] Scanning file %s\n"), file)
+						// get the index of the current file
+						index := i + 1
+						if index > batchSize {
+							index = batchSize
+						}
+						fileIndex := i + index
+
+						// print the progress
+						bar.Add(1)
+						fmt.Printf(yellow("[*] Scanning file %d of %d: %s\n"), fileIndex, numFiles, file)
+
+						// print the scan results
 						if cmd.ProcessState.ExitCode() == 0 {
 							fmt.Println(green("[+]"), "File is ok")
+							fmt.Println(string(output))
 						} else if cmd.ProcessState.ExitCode() == 1 {
 							fmt.Println(red("[-]"), "File is infected")
+							fmt.Println(string(output))
 						} else {
 							fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
 						}
-						fmt.Println(string(output))
 					}
 				}
 			}()
