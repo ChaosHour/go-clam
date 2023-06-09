@@ -59,9 +59,25 @@ func checkInfectedDir() {
 	}
 }
 
-// define the clamscan command
 func clamscanCommand(file string) *exec.Cmd {
-	return exec.Command(*clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
+	// check if the user has permission to access the directory being scanned
+	dir := filepath.Dir(file)
+	_, err := os.Stat(dir)
+	if err != nil && os.IsPermission(err) {
+		fmt.Println(yellow("[*]"), "User does not have permission to access directory:", dir)
+		fmt.Println(yellow("[*]"), "Running clamscan with sudo")
+		return clamscanCommand2(file)
+	}
+
+	// create the clamscan command
+	cmd := exec.Command(*clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
+	return cmd
+}
+
+// define the clamscan command with sudo
+func clamscanCommand2(file string) *exec.Cmd {
+	cmd := exec.Command("sudo", *clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
+	return cmd
 }
 
 // create a function to get how many cores are available on the system and set the number of threads to half of that number
