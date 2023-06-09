@@ -132,13 +132,7 @@ func main() {
 					if err != nil {
 						fmt.Println(red("[!]"), "Error:", err.Error())
 					} else {
-						// get the index of the current file
-						index := i + 1
-						if index > batchSize {
-							index = batchSize
-						}
-						//fileIndex := i + index
-
+						fmt.Println(green("[+]"), "Virus scan completed successfully")
 						// print the progress
 						fmt.Println()
 						fmt.Println()
@@ -174,6 +168,9 @@ func main() {
 
 		// wait for all the goroutines to finish
 		wg.Wait()
+
+		// print message indicating that the batch has completed
+		fmt.Println(yellow("[*]"), "Finished scanning batch", (i/batchSize)+1, "of", (numFiles/batchSize)+1, "batches")
 	}
 
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
