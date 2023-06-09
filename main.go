@@ -46,6 +46,19 @@ func getHomeDir() string {
 	return home
 }
 
+// Check that the infected directory exists and create it if it doesn't
+func checkInfectedDir() {
+	infectedDir := getHomeDir() + "/infected"
+	if _, err := os.Stat(infectedDir); os.IsNotExist(err) {
+		fmt.Println(yellow("[*]"), "Creating infected directory:", infectedDir)
+		err := os.Mkdir(infectedDir, 0755)
+		if err != nil {
+			fmt.Println(red("[!]"), "Error creating infected directory:", err.Error())
+			os.Exit(1)
+		}
+	}
+}
+
 // define the clamscan command
 func clamscanCommand(file string) *exec.Cmd {
 	return exec.Command(*clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
