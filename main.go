@@ -203,4 +203,7 @@ func main() {
 	}
 
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
+	// exit back to shell
+	os.Exit(0)
+
 }
