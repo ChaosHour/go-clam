@@ -32,4 +32,4 @@ RUN go build -o go-clam .
 #ENTRYPOINT ["./go-clam"]
 
 # command to run the executable
-CMD ["./go-clam", "-d", "/"]
+CMD ["./go-clam", "-d", "/go/src/app"]
