@@ -15,6 +15,9 @@ Still testing and modifying the code.
 
 
 ## Install
+- go install github.com/ChaosHour/go-clam@latest
+
+## Build
 - go build -o ~/go/bin/go-clam
 
 ## Usage
