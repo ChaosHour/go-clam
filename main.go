@@ -13,13 +13,14 @@ import (
 	"sync"
 
 	"github.com/fatih/color"
+	"github.com/schollz/progressbar/v3"
 )
 
 // define the flags
 var (
 	dir           = flag.String("d", "", "Directory to scan")
-	clamscanPath  = flag.String("clamscan", "/usr/local/bin/clamscan", "Path to clamscan binary")
-	freshclamPath = flag.String("freshclam", "/usr/local/bin/freshclam", "Path to freshclam binary")
+	clamscanPath  = flag.String("clamscan", "clamscan", "Path to clamscan binary")
+	freshclamPath = flag.String("freshclam", "freshclam", "Path to freshclam binary")
 )
 
 // define the colors
@@ -30,43 +31,53 @@ var (
 	yellow = color.New(color.FgYellow).SprintFunc()
 )
 
-// check and make sure the directory exists
-func checkDir(dir string) error {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-// get the list of files in the directory
-func getFiles(dir string) ([]string, error) {
-	var files []string
-	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-		if !info.IsDir() {
-			files = append(files, path)
-		}
-		return nil
-	})
-	return files, err
-}
-
-/*
-// define freshclam function and print the output to the console
-func freshclamCommand() *exec.Cmd {
-	return exec.Command(*freshclamPath, "-v")
-}
-*/
 // define freshclam function and print the output to the console
 func freshclamCommand() *exec.Cmd {
 	cmd := exec.Command(*freshclamPath, "-v")
-	//cmd.Stdout = os.Stdout
-	//cmd.Stderr = os.Stderr
 	return cmd
 }
 
-// define the clamscan command
+// Get the users home directory
+func getHomeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Error getting home directory: %v", err)
+	}
+	return home
+}
+
+// Check that the infected directory exists and create it if it doesn't
+func checkInfectedDir() {
+	infectedDir := getHomeDir() + "/infected"
+	if _, err := os.Stat(infectedDir); os.IsNotExist(err) {
+		fmt.Println(yellow("[*]"), "Creating infected directory:", infectedDir)
+		err := os.Mkdir(infectedDir, 0755)
+		if err != nil {
+			fmt.Println(red("[!]"), "Error creating infected directory:", err.Error())
+			os.Exit(1)
+		}
+	}
+}
+
 func clamscanCommand(file string) *exec.Cmd {
-	return exec.Command(*clamscanPath, "--no-summary", file)
+	// check if the user has permission to access the directory being scanned
+	dir := filepath.Dir(file)
+	_, err := os.Stat(dir)
+	if err != nil && os.IsPermission(err) {
+		fmt.Println(yellow("[*]"), "User does not have permission to access directory:", dir)
+		fmt.Println(yellow("[*]"), "Running clamscan with sudo")
+		return clamscanCommand2(file)
+	}
+
+	// create the clamscan command
+	cmd := exec.Command(*clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
+	return cmd
+}
+
+// define the clamscan command with sudo
+func clamscanCommand2(file string) *exec.Cmd {
+	cmd := exec.Command("sudo", *clamscanPath, "-r", "--no-summary", "--scan-mail=yes", "--scan-pdf=yes", "--scan-html=yes", "--scan-archive=yes", "--phishing-scan-urls=yes", "--exclude-dir="+getHomeDir()+"/infected", "--move="+getHomeDir()+"/infected", file)
+	return cmd
 }
 
 // create a function to get how many cores are available on the system and set the number of threads to half of that number
@@ -75,34 +86,43 @@ func getThreads() int {
 	if cores < 1 {
 		cores = 1
 	}
+	fmt.Println("Number of CPU cores:", runtime.NumCPU())
+	fmt.Println("Number of threads to use:", cores)
+	fmt.Println()
 	return cores
 }
 
 func main() {
 	flag.Parse()
 
-	if err := checkDir(*dir); err != nil {
+	// run freshclam to update the virus definitions. Don't print the output to the console
+	fmt.Println(yellow("[*]"), "Updating virus definitions")
+	cmd := freshclamCommand()
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		fmt.Println(red("[!]"), "Error:", err.Error())
+	} else {
+		fmt.Println(string(output))
+	}
+
+	// change the current working directory to the directory to scan
+	if *dir != "" {
+		err := os.Chdir(*dir)
+		if err != nil {
+			fmt.Println(red("[!]"), "Error changing directory:", err.Error())
+			os.Exit(1)
+		}
+	}
+
+	// get the current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Println(red("[!]"), "Error getting current working directory:", err.Error())
 		os.Exit(1)
 	}
 
-	/*
-		// run freshclam and print the output to the console
-		fmt.Println(blue("[*]"), "Running freshclam")
-		cmd := freshclamCommand()
-		cmd.Run()
-
-	*/
-
-	// run freshclam and print the output to the console
-	fmt.Println(blue("[*]"), ("Running freshclam"))
-	cmd := freshclamCommand()
-	if err := cmd.Run(); err != nil {
-		log.Fatalf("Error running freshclam: %v", err)
-	}
-
 	// get the list of files in the directory
-	files, err := getFiles(*dir)
+	files, err := filepath.Glob("*")
 	if err != nil {
 		fmt.Println(red("[!]"), "Error:", err.Error())
 		os.Exit(1)
@@ -110,50 +130,82 @@ func main() {
 
 	numFiles := len(files)
 
-	fmt.Println(yellow("[*]"), "Scanning directory:", *dir)
+	fmt.Println(yellow("[*]"), "Scanning directory:", cwd)
 	fmt.Println(yellow("[*]"), "Found", numFiles, "files")
 
-	// run the clamscan in parallel
-	var wg sync.WaitGroup
-	// set the number of threads based on the number of cores available getThreads()
+	// set the number of threads based on the number of cores available
 	maxThreads := getThreads()
-	//maxThreads := 4
-	threadChan := make(chan struct{}, maxThreads)
-	defer close(threadChan)
 
-	// create the mutex
-	var resultsMutex sync.Mutex
+	// set the batch size to 1000 files
+	batchSize := 1000
 
-	// loop over each file and execute a clamscan command in a separate goroutine
-	results := make(map[string]string)
-	for _, file := range files {
-		threadChan <- struct{}{}
-		wg.Add(1)
-		go func(file string) {
-			defer func() {
-				<-threadChan
-				wg.Done()
+	// create a wait group to wait for all the goroutines to finish
+	var wg sync.WaitGroup
+
+	// create a progress bar
+	bar := progressbar.Default(int64(numFiles))
+	fmt.Println()
+
+	// process files in batches
+	for i := 0; i < numFiles; i += batchSize {
+		// create a channel with a buffer size of maxThreads
+		fileChan := make(chan string, maxThreads)
+
+		// start the worker pool
+		for j := 0; j < maxThreads; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for file := range fileChan {
+					// run clamscan on the file
+					cmd := clamscanCommand(file)
+					output, err := cmd.CombinedOutput()
+					if err != nil {
+						fmt.Println(red("[!]"), "Error:", err.Error())
+					} else {
+						fmt.Println(green("[+]"), "Virus scan completed successfully")
+						// print the progress
+						fmt.Println()
+						fmt.Println()
+						bar.Add(1)
+						fmt.Println()
+						fmt.Println()
+						fmt.Printf(yellow("[*] Scanning file %s\n"), file)
+
+						// print the scan results
+						if cmd.ProcessState.ExitCode() == 0 {
+							fmt.Println(green("[+]"), "File is ok")
+							fmt.Println(string(output))
+						} else if cmd.ProcessState.ExitCode() == 1 {
+							fmt.Println(red("[-]"), "File is infected")
+							fmt.Println(string(output))
+						} else {
+							fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+						}
+					}
+				}
 			}()
-			// run clamscan in parallel and print the output to the console. List the files to be scanned and dispplay the results
-			fmt.Println(blue("[*]"), "Scanning file:", file)
-			cmd := clamscanCommand(file)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				fmt.Println(red("[!]"), "Error:", err.Error())
-				os.Exit(1)
-			}
-			fmt.Println(yellow("[*]"), string(output))
-			// add the result to the map
-			//results[file] = string(output)
-			// lock the mutex before writing to the map
-			resultsMutex.Lock()
-			results[file] = string(output)
-			resultsMutex.Unlock()
-		}(file)
+		}
+
+		// send files to the worker pool
+		end := i + batchSize
+		if end > numFiles {
+			end = numFiles
+		}
+		for _, file := range files[i:end] {
+			fileChan <- file
+		}
+		close(fileChan)
+
+		// wait for all the goroutines to finish
+		wg.Wait()
+
+		// print message indicating that the batch has completed
+		fmt.Println(yellow("[*]"), "Finished scanning batch", (i/batchSize)+1, "of", (numFiles/batchSize)+1, "batches")
 	}
 
-	// wait for all the goroutines to finish
-	wg.Wait()
 	fmt.Println(yellow("[*]"), "Finished scanning directory")
+	// exit back to shell
+	os.Exit(0)
 
 }
