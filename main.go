@@ -88,6 +88,7 @@ func getThreads() int {
 	}
 	fmt.Println("Number of CPU cores:", runtime.NumCPU())
 	fmt.Println("Number of threads to use:", cores)
+	fmt.Println()
 	return cores
 }
 
@@ -143,6 +144,7 @@ func main() {
 
 	// create a progress bar
 	bar := progressbar.Default(int64(numFiles))
+	fmt.Println()
 
 	// process files in batches
 	for i := 0; i < numFiles; i += batchSize {

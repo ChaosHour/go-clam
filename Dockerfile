@@ -3,12 +3,16 @@
 # Dockerfile for testing go-clam - DO NOT USE!!!
 #
 # Usage:
-#   docker build -t go-clam .
-#   docker run -it --rm go-clam
+#   docker build -t go-clam:1.0 .
+#   docker run -it --rm go-clam:1.0
 #
 ##################################################################################
 # Use the official Go image as the base image
 FROM golang:latest
+
+LABEL maintainer=kurt_lv@cox.net
+LABEL version=1.0
+LABEL environment=dev
 
 
 # Set the Current Working Directory inside the container
