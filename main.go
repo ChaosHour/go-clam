@@ -3,14 +3,17 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sync"
+	"syscall"
 
 	"github.com/fatih/color"
 	"github.com/schollz/progressbar/v3"
@@ -27,8 +30,12 @@ var (
 var (
 	red    = color.New(color.FgRed).SprintFunc()
 	green  = color.New(color.FgGreen).SprintFunc()
-	blue   = color.New(color.FgBlue).SprintFunc()
 	yellow = color.New(color.FgYellow).SprintFunc()
+)
+
+// Add logging configuration
+var (
+	logger = log.New(os.Stdout, "", log.LstdFlags)
 )
 
 // define freshclam function and print the output to the console
@@ -95,6 +102,29 @@ func getThreads() int {
 func main() {
 	flag.Parse()
 
+	// Validate directory input
+	if *dir != "" {
+		if _, err := os.Stat(*dir); os.IsNotExist(err) {
+			logger.Fatalf("Directory %s does not exist", *dir)
+		}
+	}
+
+	// Create infected directory if it doesn't exist
+	checkInfectedDir()
+
+	// Setup context with cancellation
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle OS signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigChan
+		logger.Println("Received termination signal. Cleaning up...")
+		cancel()
+	}()
+
 	// run freshclam to update the virus definitions. Don't print the output to the console
 	fmt.Println(yellow("[*]"), "Updating virus definitions")
 	cmd := freshclamCommand()
@@ -142,9 +172,12 @@ func main() {
 	// create a wait group to wait for all the goroutines to finish
 	var wg sync.WaitGroup
 
-	// create a progress bar
-	bar := progressbar.Default(int64(numFiles))
-	fmt.Println()
+	// Create a mutex for progress bar updates
+	var progressMutex sync.Mutex
+	bar := progressbar.NewOptions(numFiles, // Changed from int64(numFiles) to numFiles
+		progressbar.OptionSetDescription("Scanning files"),
+		progressbar.OptionShowCount(),
+		progressbar.OptionSetTheme(progressbar.Theme{Saucer: "=", SaucerPadding: "-"}))
 
 	// process files in batches
 	for i := 0; i < numFiles; i += batchSize {
@@ -157,30 +190,38 @@ func main() {
 			go func() {
 				defer wg.Done()
 				for file := range fileChan {
-					// run clamscan on the file
-					cmd := clamscanCommand(file)
-					output, err := cmd.CombinedOutput()
-					if err != nil {
-						fmt.Println(red("[!]"), "Error:", err.Error())
-					} else {
-						fmt.Println(green("[+]"), "Virus scan completed successfully")
-						// print the progress
-						fmt.Println()
-						fmt.Println()
-						bar.Add(1)
-						fmt.Println()
-						fmt.Println()
-						fmt.Printf(yellow("[*] Scanning file %s\n"), file)
-
-						// print the scan results
-						if cmd.ProcessState.ExitCode() == 0 {
-							fmt.Println(green("[+]"), "File is ok")
-							fmt.Println(string(output))
-						} else if cmd.ProcessState.ExitCode() == 1 {
-							fmt.Println(red("[-]"), "File is infected")
-							fmt.Println(string(output))
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						// run clamscan on the file
+						cmd := clamscanCommand(file)
+						output, err := cmd.CombinedOutput()
+						if err != nil {
+							fmt.Println(red("[!]"), "Error:", err.Error())
 						} else {
-							fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+							fmt.Println(green("[+]"), "Virus scan completed successfully")
+							// print the progress
+							fmt.Println()
+							fmt.Println()
+							// Thread-safe progress update
+							progressMutex.Lock()
+							bar.Add(1)
+							progressMutex.Unlock()
+							fmt.Println()
+							fmt.Println()
+							fmt.Printf(yellow("[*] Scanning file %s\n"), file)
+
+							// print the scan results
+							if cmd.ProcessState.ExitCode() == 0 {
+								fmt.Println(green("[+]"), "File is ok")
+								fmt.Println(string(output))
+							} else if cmd.ProcessState.ExitCode() == 1 {
+								fmt.Println(red("[-]"), "File is infected")
+								fmt.Println(string(output))
+							} else {
+								fmt.Println(red("[!]"), "Unknown exit code:", cmd.ProcessState.ExitCode())
+							}
 						}
 					}
 				}
