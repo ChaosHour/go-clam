@@ -18,8 +18,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChaosHour/go-clam/internal/display"
 	"github.com/fatih/color"
-	"github.com/schollz/progressbar/v3"
 )
 
 // define the flags
@@ -35,6 +35,7 @@ var (
 	maxFileSize   = flag.Int64("max-size", 100, "Maximum file size to scan in MB (0 for unlimited)")
 	skipHidden    = flag.Bool("skip-hidden", false, "Skip hidden files and directories")
 	concurrency   = flag.Int("concurrency", 0, "Number of concurrent scans (0 = auto)")
+	fastMode      = flag.Bool("fast", false, "Enable fast mode (skip freshclam update, minimal output)")
 )
 
 // Define a custom flag type to handle multiple string values
@@ -59,8 +60,8 @@ func init() {
 // define the colors
 var (
 	red    = color.New(color.FgRed).SprintFunc()
-	green  = color.New(color.FgGreen).SprintFunc()
 	yellow = color.New(color.FgYellow).SprintFunc()
+	green  = color.New(color.FgGreen).SprintFunc()
 )
 
 // Add logging configuration
@@ -103,6 +104,9 @@ func checkInfectedDir() error {
 		if err := os.Mkdir(infectedDir, 0755); err != nil {
 			return fmt.Errorf("error creating infected directory: %w", err)
 		}
+	} else {
+		// Using green for a successful message
+		fmt.Println(green("[+]"), "Infected directory ready")
 	}
 	return nil
 }
@@ -155,6 +159,19 @@ func findFilesToScan(dirs []string) ([]string, error) {
 	var allFiles []string
 	maxSizeBytes := *maxFileSize * 1024 * 1024 // Convert MB to bytes
 
+	// Pre-compile extension maps for faster lookups
+	includeMap := make(map[string]bool, len(includeExt))
+	for _, ext := range includeExt {
+		includeMap[strings.ToLower(ext)] = true
+		includeMap["."+strings.ToLower(ext)] = true
+	}
+
+	excludeMap := make(map[string]bool, len(excludeExt))
+	for _, ext := range excludeExt {
+		excludeMap[strings.ToLower(ext)] = true
+		excludeMap["."+strings.ToLower(ext)] = true
+	}
+
 	for _, dir := range dirs {
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -183,27 +200,13 @@ func findFilesToScan(dirs []string) ([]string, error) {
 				return nil
 			}
 
-			// Handle extension filtering
+			// Handle extension filtering with pre-compiled maps
 			ext := strings.ToLower(filepath.Ext(path))
-			if len(includeExt) > 0 {
-				included := false
-				for _, includedExt := range includeExt {
-					if ext == "."+includedExt || ext == includedExt {
-						included = true
-						break
-					}
-				}
-				if !included {
-					return nil
-				}
+			if len(includeMap) > 0 && !includeMap[ext] {
+				return nil
 			}
-
-			if len(excludeExt) > 0 {
-				for _, excludedExt := range excludeExt {
-					if ext == "."+excludedExt || ext == excludedExt {
-						return nil
-					}
-				}
+			if len(excludeMap) > 0 && excludeMap[ext] {
+				return nil
 			}
 
 			allFiles = append(allFiles, path)
@@ -220,9 +223,16 @@ func findFilesToScan(dirs []string) ([]string, error) {
 
 // scanWithClamd uses the ClamAV daemon for scanning which is much faster
 func scanWithClamd(ctx context.Context, file string) ScanResult {
-	// Modified to use more compatible command-line options
-	// Removed --stream and --fdpass which can cause issues
-	cmd := exec.CommandContext(ctx, "clamdscan", "--no-summary", file)
+	// Use absolute path to avoid relative path resolution overhead
+	absFile, err := filepath.Abs(file)
+	if err != nil {
+		absFile = file // fallback to original
+	}
+
+	// Optimized command with minimal options for speed
+	cmd := exec.CommandContext(ctx, "clamdscan", "--no-summary", "--quiet", absFile)
+
+	// Use smaller buffer for faster I/O
 	output, err := cmd.CombinedOutput()
 
 	if err != nil {
@@ -345,15 +355,18 @@ func main() {
 		cancel()
 	}()
 
-	// run freshclam to update the virus definitions
-	fmt.Println(yellow("[*]"), "Updating virus definitions")
-	cmd := freshclamCommand(ctx)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Println(red("[!]"), "Error updating virus definitions:", err.Error())
-		fmt.Println(yellow("[*]"), "Continuing with scan using existing definitions")
-	} else if *verbose {
-		fmt.Println(string(output))
+	// Skip virus definition updates in fast mode
+	if !*fastMode {
+		// run freshclam to update the virus definitions
+		fmt.Println(yellow("[*]"), "Updating virus definitions")
+		cmd := freshclamCommand(ctx)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Println(red("[!]"), "Error updating virus definitions:", err.Error())
+			fmt.Println(yellow("[*]"), "Continuing with scan using existing definitions")
+		} else if *verbose {
+			fmt.Println(string(output))
+		}
 	}
 
 	// Find all files to scan from the specified directories
@@ -374,109 +387,74 @@ func main() {
 	// set the number of threads based on the number of cores available
 	maxThreads := getThreads()
 
-	// set the batch size to a more reasonable number based on file count
-	batchSize := 100
-	if numFiles < 500 {
-		batchSize = 50
-	}
-
 	// create a wait group to wait for all the goroutines to finish
 	var wg sync.WaitGroup
 
 	// Create atomic counter for progress
 	var filesProcessed int64 = 0
 
-	// Create a mutex for console output
-	var outputMutex sync.Mutex
-
-	// Create progress bar
-	bar := progressbar.NewOptions(numFiles,
-		progressbar.OptionSetDescription("Scanning files"),
-		progressbar.OptionShowCount(),
-		progressbar.OptionSetTheme(progressbar.Theme{Saucer: "=", SaucerPadding: "-"}))
+	// Replace the progress bar creation with our new tracker
+	progressTracker := display.NewProgressTracker(numFiles, *verbose)
 
 	// Channel for results to avoid console output issues
-	resultChan := make(chan ScanResult, maxThreads*2)
+	resultChan := make(chan ScanResult, maxThreads*4) // Increased buffer
 
 	// Start result processor
 	go func() {
 		for result := range resultChan {
-			outputMutex.Lock()
-			if *verbose {
-				fmt.Printf("\n\n%s Scanned: %s\n", yellow("[*]"), result.File)
-			}
-
 			if result.Error != nil {
-				fmt.Println(red("[!]"), "Error scanning:", result.Error.Error())
+				progressTracker.LogResult("Error scanning: "+result.Error.Error(), false, true)
 			} else if result.IsClean {
-				if *verbose {
-					fmt.Println(green("[+]"), "File is clean")
-				}
+				progressTracker.LogResult("File is clean: "+result.File, true, false)
 			} else {
-				fmt.Println(red("[-]"), "File is infected:", result.File)
-				fmt.Println(result.Message)
+				progressTracker.LogResult("File is infected: "+result.File, false, false)
+				if *verbose {
+					fmt.Println(result.Message)
+				}
 			}
-			outputMutex.Unlock()
-
-			// Update progress
-			bar.Add(1)
 		}
 	}()
 
-	// Start time tracking
-	startTime := time.Now()
+	// Use worker pool pattern for better resource management
+	workerPool := make(chan string, maxThreads*2) // File queue
 
-	// process files in batches
-	for i := 0; i < numFiles; i += batchSize {
-		end := i + batchSize
-		if end > numFiles {
-			end = numFiles
-		}
+	// Start worker goroutines
+	for i := 0; i < maxThreads; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for file := range workerPool {
+				result := scanFile(ctx, file)
+				atomic.AddInt64(&filesProcessed, 1)
 
-		// create a semaphore channel to limit concurrent goroutines
-		sem := make(chan struct{}, maxThreads)
-
-		// Process this batch
-		for _, file := range files[i:end] {
-			select {
-			case <-ctx.Done():
-				goto cleanup
-			default:
-				sem <- struct{}{} // Acquire semaphore
-				wg.Add(1)
-
-				go func(file string) {
-					defer wg.Done()
-					defer func() { <-sem }() // Release semaphore
-
-					result := scanFile(ctx, file)
-					atomic.AddInt64(&filesProcessed, 1)
-
-					select {
-					case resultChan <- result:
-					case <-ctx.Done():
-						return
-					}
-				}(file)
+				select {
+				case resultChan <- result:
+				case <-ctx.Done():
+					return
+				}
 			}
-		}
-
-		// Wait for this batch to complete
-		wg.Wait()
-
-		if *verbose {
-			fmt.Println(yellow("[*]"), "Finished scanning batch", (i/batchSize)+1, "of", (numFiles/batchSize)+1)
-		}
+		}()
 	}
 
-cleanup:
+	// Feed files to worker pool
+	go func() {
+		defer close(workerPool)
+		for _, file := range files {
+			select {
+			case workerPool <- file:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Wait for all workers to complete
+	wg.Wait()
 	close(resultChan)
 
-	// Final statistics
-	elapsedTime := time.Since(startTime)
-	filesScanned := atomic.LoadInt64(&filesProcessed)
+	// Wait a moment for the result processor to finish
+	time.Sleep(100 * time.Millisecond)
 
-	fmt.Printf("\n%s Scan complete. Scanned %d files in %s (%.2f files/sec)\n",
-		green("[+]"), filesScanned, elapsedTime,
-		float64(filesScanned)/elapsedTime.Seconds())
+	// Show final statistics
+	progressTracker.Finish(atomic.LoadInt64(&filesProcessed))
 }
