@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -57,6 +58,45 @@ func TestSplitChunks(t *testing.T) {
 
 	if got := splitChunks(nil, 4); len(got) != 0 {
 		t.Errorf("expected no chunks for empty input, got %d", len(got))
+	}
+}
+
+func TestFindFilesToScan(t *testing.T) {
+	dir := t.TempDir()
+	quarantineDir := filepath.Join(dir, "infected")
+	if err := os.Mkdir(quarantineDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	write("scan-me.txt", "content")
+	write("empty.txt", "")
+	write("infected/sample.bin", "quarantined - must not be rescanned")
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe.fifo"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	files, stats, err := findFilesToScan([]string{dir}, quarantineDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || filepath.Base(files[0]) != "scan-me.txt" {
+		t.Errorf("expected only scan-me.txt, got %v", files)
+	}
+	if stats.Empty != 1 {
+		t.Errorf("expected 1 empty skip, got %d", stats.Empty)
+	}
+	if stats.NonRegular != 1 {
+		t.Errorf("expected 1 non-regular skip, got %d", stats.NonRegular)
+	}
+	if got := stats.Total(); got != 2 {
+		t.Errorf("expected 2 total skips, got %d (%s)", got, stats)
 	}
 }
 

@@ -169,10 +169,46 @@ func quarantine(file, dir string) (string, error) {
 	return dest, nil
 }
 
+// discoveryStats counts files that were seen but not queued for scanning,
+// so coverage is visible instead of silent.
+type discoveryStats struct {
+	Unreadable int // walk errors / stat failures
+	NonRegular int // FIFOs, sockets, devices, symlinks
+	Empty      int // zero-byte files
+	Hidden     int // skipped via -skip-hidden
+	TooLarge   int // over -max-size
+	Filtered   int // excluded by -include/-exclude
+}
+
+// Total returns how many files were skipped for any reason.
+func (s discoveryStats) Total() int {
+	return s.Unreadable + s.NonRegular + s.Empty + s.Hidden + s.TooLarge + s.Filtered
+}
+
+// String renders only the non-zero skip reasons.
+func (s discoveryStats) String() string {
+	var parts []string
+	add := func(n int, label string) {
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, label))
+		}
+	}
+	add(s.Unreadable, "unreadable")
+	add(s.NonRegular, "non-regular")
+	add(s.Empty, "empty")
+	add(s.Hidden, "hidden")
+	add(s.TooLarge, "over max-size")
+	add(s.Filtered, "extension-filtered")
+	return strings.Join(parts, ", ")
+}
+
 // findFilesToScan returns a list of files to scan from all directories,
-// never descending into the quarantine directory.
-func findFilesToScan(dirs []string, infectedDir string) ([]string, error) {
+// never descending into the quarantine directory. It uses WalkDir so
+// directory entries come without a stat; files are only stat'ed after the
+// cheap name-based filters pass.
+func findFilesToScan(dirs []string, infectedDir string) ([]string, discoveryStats, error) {
 	var allFiles []string
+	var stats discoveryStats
 	maxSizeBytes := *maxFileSize * 1024 * 1024 // Convert MB to bytes
 
 	// Pre-compile extension maps for faster lookups
@@ -189,13 +225,14 @@ func findFilesToScan(dirs []string, infectedDir string) ([]string, error) {
 	}
 
 	for _, dir := range dirs {
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
+				stats.Unreadable++
 				return nil // Skip files we can't access
 			}
 
 			// Skip directories (we'll scan their contents)
-			if info.IsDir() {
+			if d.IsDir() {
 				// Never scan the quarantine directory itself
 				if abs, err := filepath.Abs(path); err == nil && abs == infectedDir {
 					return filepath.SkipDir
@@ -207,36 +244,48 @@ func findFilesToScan(dirs []string, infectedDir string) ([]string, error) {
 				return nil
 			}
 
+			// Cheap name-based filters first - no stat needed
+			if *skipHidden && strings.HasPrefix(filepath.Base(path), ".") {
+				stats.Hidden++
+				return nil
+			}
+			ext := strings.ToLower(filepath.Ext(path))
+			if len(includeMap) > 0 && !includeMap[ext] {
+				stats.Filtered++
+				return nil
+			}
+			if len(excludeMap) > 0 && excludeMap[ext] {
+				stats.Filtered++
+				return nil
+			}
+
 			// Only scan regular files - FIFOs, sockets, and device nodes
-			// would block the scanner indefinitely.
-			if !info.Mode().IsRegular() {
+			// would block the scanner indefinitely. The type bits come
+			// from the directory entry, still no stat.
+			if !d.Type().IsRegular() {
+				stats.NonRegular++
+				return nil
+			}
+
+			// Stat only the survivors, for the size checks
+			info, err := d.Info()
+			if err != nil {
+				stats.Unreadable++
 				return nil
 			}
 
 			// Nothing to scan in an empty file
 			if info.Size() == 0 {
-				return nil
-			}
-
-			// Skip hidden files if requested
-			if *skipHidden && strings.HasPrefix(filepath.Base(path), ".") {
+				stats.Empty++
 				return nil
 			}
 
 			// Skip files over max size
 			if maxSizeBytes > 0 && info.Size() > maxSizeBytes {
+				stats.TooLarge++
 				if *verbose {
 					fmt.Printf("Skipping large file: %s (%.2f MB)\n", path, float64(info.Size())/(1024*1024))
 				}
-				return nil
-			}
-
-			// Handle extension filtering with pre-compiled maps
-			ext := strings.ToLower(filepath.Ext(path))
-			if len(includeMap) > 0 && !includeMap[ext] {
-				return nil
-			}
-			if len(excludeMap) > 0 && excludeMap[ext] {
 				return nil
 			}
 
@@ -245,11 +294,11 @@ func findFilesToScan(dirs []string, infectedDir string) ([]string, error) {
 		})
 
 		if err != nil {
-			return nil, err
+			return nil, stats, err
 		}
 	}
 
-	return allFiles, nil
+	return allFiles, stats, nil
 }
 
 // scanWithClamd scans one file over an established clamd connection - no
@@ -335,6 +384,17 @@ func runClamscanBatch(ctx context.Context, files []string, results chan<- ScanRe
 		"--phishing-scan-urls=yes",
 		"--file-list=" + listFile.Name(),
 	}
+	// Align the engine's own limits with -max-size: stock ClamAV caps
+	// scanning at ~25MB, silently reporting bigger accepted files clean
+	// after a partial scan. clamscan rejects values above 4000M.
+	limitMB := *maxFileSize
+	if limitMB <= 0 || limitMB > 4000 {
+		limitMB = 4000
+	}
+	args = append(args,
+		fmt.Sprintf("--max-filesize=%dM", limitMB),
+		fmt.Sprintf("--max-scansize=%dM", limitMB),
+	)
 
 	cmd := exec.CommandContext(ctx, *clamscanPath, args...)
 	stdout, err := cmd.StdoutPipe()
@@ -423,6 +483,10 @@ func main() {
 		}
 		client.Close()
 		fmt.Println(yellow("[*]"), "Using clamd socket at:", *clamdSocket)
+		// clamd's limits come from clamd.conf, not from our flags
+		if *maxFileSize == 0 || *maxFileSize > 25 {
+			fmt.Println(yellow("[*]"), "Note: clamd's MaxFileSize/MaxScanSize (clamd.conf, default ~25MB) still apply - larger files may be only partially scanned")
+		}
 	}
 
 	// Create infected directory if it doesn't exist
@@ -460,7 +524,7 @@ func main() {
 
 	// Find all files to scan from the specified directories
 	fmt.Println(yellow("[*]"), "Discovering files in directories:", dirs)
-	files, err := findFilesToScan(dirs, infectedDir)
+	files, skipStats, err := findFilesToScan(dirs, infectedDir)
 	if err != nil {
 		logger.Fatalf("Error finding files: %v", err)
 	}
@@ -468,10 +532,16 @@ func main() {
 	numFiles := len(files)
 	if numFiles == 0 {
 		fmt.Println(yellow("[*]"), "No files found to scan in directories:", dirs)
+		if skipStats.Total() > 0 {
+			fmt.Println(yellow("[*]"), "Skipped", skipStats.Total(), "files:", skipStats.String())
+		}
 		os.Exit(0)
 	}
 
 	fmt.Println(yellow("[*]"), "Found", numFiles, "files to scan")
+	if skipStats.Total() > 0 {
+		fmt.Println(yellow("[*]"), "Skipped", skipStats.Total(), "files:", skipStats.String())
+	}
 
 	// set the number of threads based on the number of cores available
 	maxThreads := getThreads()

@@ -4,7 +4,9 @@ Reviewed: `cmd/clam/main.go`, `internal/display/progress.go`, `internal/pool/sca
 
 Goal: make scans faster and make sure what we report as "scanned" is actually scanned.
 
-**Status (2026-07-12):** P0 items 1–3 and P1 items 4–7 are implemented on `fab_it2` — native clamd socket client (`internal/clamd`), batched `clamscan --file-list` scanning, regular-file/empty-file filtering, clamscan-convention exit codes (0/1/2) with clean/infected/error counts in the summary, unified Go-side quarantine for both modes (discovery now skips the quarantine dir, replacing `--exclude-dir`/`--move`), and a done-channel shutdown for the result processor (both sleeps removed). Implementing #1 and #2 also removed the per-file sudo path (#7) and the per-file `getHomeDir()` calls (#12).
+**Status (2026-07-12):** P0 items 1–3, P1 items 4–7, and P2 items 8–10 are implemented on `fab_it2` — native clamd socket client (`internal/clamd`), batched `clamscan --file-list` scanning, regular-file/empty-file filtering, clamscan-convention exit codes (0/1/2) with clean/infected/error counts in the summary, unified Go-side quarantine for both modes (discovery now skips the quarantine dir, replacing `--exclude-dir`/`--move`), a done-channel shutdown for the result processor (both sleeps removed), `WalkDir`-based discovery that stats only files surviving the name filters, `--max-filesize`/`--max-scansize` aligned with `-max-size` (plus a clamd.conf-limits warning in clamd mode), and a per-reason skip breakdown printed after discovery. Implementing #1 and #2 also removed the per-file sudo path (#7) and the per-file `getHomeDir()` calls (#12).
+
+\*#8's "stream discovery into the workers" half is still open — discovery is faster now but the file list is still materialized before scanning starts (the progress bar needs the total upfront).
 
 ## Priority summary
 
@@ -17,9 +19,9 @@ Goal: make scans faster and make sure what we report as "scanned" is actually sc
 | 5 | P1 ✅ done | Infected files are quarantined in clamscan mode but **not** in clamd mode | Inconsistent protection depending on mode |
 | 6 | P1 ✅ done | Result processor is "synchronized" with a 100 ms `time.Sleep` | Results can be silently dropped from output |
 | 7 | P1 ✅ done | `sudo` fallback inside parallel workers | Hangs waiting for a password prompt mid-scan |
-| 8 | P2 | `filepath.Walk` + upfront file list | Slower discovery, delayed first scan, memory on big trees |
-| 9 | P2 | Default `-max-size 100` exceeds ClamAV's own 25 MB scan limits | Files 25–100 MB are only *partially* scanned, silently |
-| 10 | P2 | Walk errors and skips are swallowed silently | User can't tell what was never scanned |
+| 8 | P2 ✅ done* | `filepath.Walk` + upfront file list | Slower discovery, delayed first scan, memory on big trees |
+| 9 | P2 ✅ done | Default `-max-size 100` exceeds ClamAV's own 25 MB scan limits | Files 25–100 MB are only *partially* scanned, silently |
+| 10 | P2 ✅ done | Walk errors and skips are swallowed silently | User can't tell what was never scanned |
 | 11 | P3 | Dead code: `internal/pool` never imported; duplicate `ScanResult` | Maintenance noise |
 | 12 | P3 | Per-file `getHomeDir()` / `os.Stat(dir)` calls, unused struct fields | Minor waste |
 
