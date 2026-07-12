@@ -22,3 +22,6 @@ go.work
 
 # bin directory
 bin/
+
+# graphify knowledge-graph output (generated)
+graphify-out/

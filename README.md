@@ -88,15 +88,25 @@ This is optimal for most systems, but you can adjust this with the `-concurrency
 When comparing `ls` output to the files go-clam reports, you might notice a difference (e.g., `ls` shows 79 files but go-clam scans 65). This is because go-clam:
 
 - Skips directories (only scans actual files)
+- Skips non-regular files (FIFOs, sockets, device nodes) and empty files
+- Skips the quarantine directory (`~/infected`) if it is inside a scanned path
 - By default, skips files larger than 100MB (configurable with `-max-size`)
 - Applies extension filters if you use `-include` or `-exclude`
 - May skip files it can't access due to permissions
 
-To see exactly which files are being skipped, use the verbose flag:
+go-clam prints a per-reason breakdown of skipped files after discovery, e.g.:
 
-```bash
-./bin/go-clam -v -d /path/to/scan
 ```
+[*] Found 65 files to scan
+[*] Skipped 14 files: 2 unreadable, 1 non-regular, 3 empty, 5 over max-size, 3 extension-filtered
+```
+
+### Filtering notes
+
+- `-include` and `-exclude` cannot be combined: `-include` already restricts scanning to the listed extensions, so an additional `-exclude` could never remove anything further. go-clam exits with an error if both are given.
+- When `-include` is used, files **without** any extension are skipped, since they can never match an extension list. Drop `-include` to scan extensionless files.
+- Symbolic links are never followed. A symlink to a file or directory outside the scanned tree is counted as "non-regular" and skipped; scan the link target's location directly if you need it covered.
+- Exit codes follow the clamscan convention: `0` = all clean, `1` = infections found, `2` = errors occurred. Cron jobs and CI pipelines can react to these directly.
 
 ## Using Multiple Directories
 
