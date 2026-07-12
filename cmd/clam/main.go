@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ChaosHour/go-clam/internal/clamd"
 	"github.com/ChaosHour/go-clam/internal/display"
 	"github.com/fatih/color"
 )
@@ -91,51 +93,25 @@ func getHomeDir() (string, error) {
 	return home, nil
 }
 
-// Check that the infected directory exists and create it if it doesn't
-func checkInfectedDir() error {
+// Check that the infected directory exists and create it if it doesn't,
+// returning its path so it is resolved once for the whole run.
+func checkInfectedDir() (string, error) {
 	home, err := getHomeDir()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	infectedDir := filepath.Join(home, "infected")
 	if _, err := os.Stat(infectedDir); os.IsNotExist(err) {
 		fmt.Println(yellow("[*]"), "Creating infected directory:", infectedDir)
 		if err := os.Mkdir(infectedDir, 0755); err != nil {
-			return fmt.Errorf("error creating infected directory: %w", err)
+			return "", fmt.Errorf("error creating infected directory: %w", err)
 		}
 	} else {
 		// Using green for a successful message
 		fmt.Println(green("[+]"), "Infected directory ready")
 	}
-	return nil
-}
-
-func clamscanCommand(ctx context.Context, file string, needsSudo bool) *exec.Cmd {
-	home, err := getHomeDir()
-	if err != nil {
-		logger.Printf("Error getting home directory: %v", err)
-		home = "~/infected" // Fallback
-	}
-
-	infectedDir := filepath.Join(home, "infected")
-	args := []string{
-		"-r",
-		"--no-summary",
-		"--scan-mail=yes",
-		"--scan-pdf=yes",
-		"--scan-html=yes",
-		"--scan-archive=yes",
-		"--phishing-scan-urls=yes",
-		"--exclude-dir=" + infectedDir,
-		"--move=" + infectedDir,
-		file,
-	}
-
-	if needsSudo {
-		return exec.CommandContext(ctx, "sudo", append([]string{*clamscanPath}, args...)...)
-	}
-	return exec.CommandContext(ctx, *clamscanPath, args...)
+	return infectedDir, nil
 }
 
 // create a function to get how many cores are available on the system and set the number of threads to half of that number
@@ -187,6 +163,17 @@ func findFilesToScan(dirs []string) ([]string, error) {
 				return nil
 			}
 
+			// Only scan regular files - FIFOs, sockets, and device nodes
+			// would block the scanner indefinitely.
+			if !info.Mode().IsRegular() {
+				return nil
+			}
+
+			// Nothing to scan in an empty file
+			if info.Size() == 0 {
+				return nil
+			}
+
 			// Skip hidden files if requested
 			if *skipHidden && strings.HasPrefix(filepath.Base(path), ".") {
 				return nil
@@ -221,91 +208,148 @@ func findFilesToScan(dirs []string) ([]string, error) {
 	return allFiles, nil
 }
 
-// scanWithClamd uses the ClamAV daemon for scanning which is much faster
-func scanWithClamd(ctx context.Context, file string) ScanResult {
-	// Use absolute path to avoid relative path resolution overhead
+// scanWithClamd scans one file over an established clamd connection - no
+// subprocess and no per-file reconnect.
+func scanWithClamd(client *clamd.Client, file string) ScanResult {
 	absFile, err := filepath.Abs(file)
 	if err != nil {
 		absFile = file // fallback to original
 	}
 
-	// Optimized command with minimal options for speed
-	cmd := exec.CommandContext(ctx, "clamdscan", "--no-summary", "--quiet", absFile)
-
-	// Use smaller buffer for faster I/O
-	output, err := cmd.CombinedOutput()
-
+	res, err := client.Scan(absFile)
 	if err != nil {
-		// Check if it's just a virus found (exit code 1)
-		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
-			return ScanResult{
-				File:    file,
-				IsClean: false,
-				Message: string(output),
-				Error:   nil,
-			}
-		}
 		return ScanResult{
 			File:    file,
 			IsClean: false,
-			Message: string(output),
+			Message: res.Raw,
 			Error:   err,
 		}
 	}
 
 	return ScanResult{
 		File:    file,
-		IsClean: true,
-		Message: string(output),
-		Error:   nil,
+		IsClean: res.Clean,
+		Message: res.Raw,
 	}
 }
 
-// scanFile handles the scanning of an individual file and returns the result
-func scanFile(ctx context.Context, file string) ScanResult {
-	// Use clamd if requested (much faster)
-	if *useClamd {
-		return scanWithClamd(ctx, file)
+type verdict int
+
+const (
+	verdictClean verdict = iota
+	verdictInfected
+	verdictError
+)
+
+// parseClamscanLine classifies one line of clamscan output. Verdict lines
+// look like "/path: OK", "/path: Sig FOUND", or "/path: msg ERROR";
+// anything else (move notices, warnings) is not a per-file verdict.
+func parseClamscanLine(line string) (file string, v verdict, ok bool) {
+	switch {
+	case strings.HasSuffix(line, ": OK"):
+		return strings.TrimSuffix(line, ": OK"), verdictClean, true
+	case strings.HasSuffix(line, " FOUND"):
+		if i := strings.LastIndex(line, ": "); i != -1 {
+			return line[:i], verdictInfected, true
+		}
+	case strings.HasSuffix(line, " ERROR"):
+		if i := strings.LastIndex(line, ": "); i != -1 {
+			return line[:i], verdictError, true
+		}
 	}
+	return "", 0, false
+}
 
-	// Check if we need sudo by testing directory permissions
-	dir := filepath.Dir(file)
-	_, err := os.Stat(dir)
-	needsSudo := err != nil && os.IsPermission(err)
-
-	if needsSudo && *verbose {
-		fmt.Println(yellow("[*]"), "User does not have permission to access directory:", dir)
-		fmt.Println(yellow("[*]"), "Running clamscan with sudo")
-	}
-
-	// Create and run the appropriate command with context
-	cmd := clamscanCommand(ctx, file, needsSudo)
-	output, err := cmd.CombinedOutput()
-
+// runClamscanBatch scans a chunk of files with a single clamscan process
+// via --file-list, so the signature database loads once per process instead
+// of once per file. Per-file results stream to the results channel as
+// clamscan prints them.
+func runClamscanBatch(ctx context.Context, files []string, infectedDir string, results chan<- ScanResult) error {
+	listFile, err := os.CreateTemp("", "go-clam-list-*.txt")
 	if err != nil {
-		// Check if it's just a virus found (exit code 1)
-		if exitError, ok := err.(*exec.ExitError); ok && exitError.ExitCode() == 1 {
-			return ScanResult{
-				File:    file,
-				IsClean: false,
-				Message: string(output),
-				Error:   nil,
-			}
+		return fmt.Errorf("creating file list: %w", err)
+	}
+	defer os.Remove(listFile.Name())
+
+	for _, f := range files {
+		if _, err := fmt.Fprintln(listFile, f); err != nil {
+			listFile.Close()
+			return fmt.Errorf("writing file list: %w", err)
 		}
-		return ScanResult{
-			File:    file,
-			IsClean: false,
-			Message: string(output),
-			Error:   err,
+	}
+	if err := listFile.Close(); err != nil {
+		return fmt.Errorf("closing file list: %w", err)
+	}
+
+	args := []string{
+		"--no-summary",
+		"--scan-mail=yes",
+		"--scan-pdf=yes",
+		"--scan-html=yes",
+		"--scan-archive=yes",
+		"--phishing-scan-urls=yes",
+		"--exclude-dir=" + infectedDir,
+		"--move=" + infectedDir,
+		"--file-list=" + listFile.Name(),
+	}
+
+	cmd := exec.CommandContext(ctx, *clamscanPath, args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		file, v, ok := parseClamscanLine(line)
+		if !ok {
+			continue
+		}
+		result := ScanResult{File: file, IsClean: v == verdictClean, Message: line}
+		if v == verdictError {
+			result.Error = fmt.Errorf("clamscan: %s", line)
+		}
+		select {
+		case results <- result:
+		case <-ctx.Done():
+			cmd.Wait()
+			return ctx.Err()
 		}
 	}
 
-	return ScanResult{
-		File:    file,
-		IsClean: true,
-		Message: string(output),
-		Error:   nil,
+	err = cmd.Wait()
+	// Exit code 1 just means infections were found; they were already
+	// reported line by line.
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		err = nil
 	}
+	if err != nil {
+		return fmt.Errorf("clamscan failed: %v (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// splitChunks divides files into at most n roughly equal chunks.
+func splitChunks(files []string, n int) [][]string {
+	if n > len(files) {
+		n = len(files)
+	}
+	chunks := make([][]string, 0, n)
+	for i := 0; i < n; i++ {
+		start := i * len(files) / n
+		end := (i + 1) * len(files) / n
+		if start < end {
+			chunks = append(chunks, files[start:end])
+		}
+	}
+	return chunks
 }
 
 func main() {
@@ -324,21 +368,23 @@ func main() {
 		}
 	}
 
-	// If using clamd, verify the socket exists
+	// If using clamd, verify the daemon is actually answering on the socket
 	if *useClamd {
-		_, err := os.Stat(*clamdSocket)
+		client, err := clamd.Dial(*clamdSocket)
 		if err != nil {
-			if os.IsNotExist(err) {
-				logger.Fatalf("ClamAV socket not found at %s. Please ensure clamd is running or specify correct socket path with -socket", *clamdSocket)
-			} else {
-				logger.Fatalf("Error accessing clamd socket at %s: %v", *clamdSocket, err)
-			}
+			logger.Fatalf("Cannot connect to clamd at %s: %v. Please ensure clamd is running or specify correct socket path with -socket", *clamdSocket, err)
 		}
+		if err := client.Ping(); err != nil {
+			client.Close()
+			logger.Fatalf("clamd at %s did not answer PING: %v", *clamdSocket, err)
+		}
+		client.Close()
 		fmt.Println(yellow("[*]"), "Using clamd socket at:", *clamdSocket)
 	}
 
 	// Create infected directory if it doesn't exist
-	if err := checkInfectedDir(); err != nil {
+	infectedDir, err := checkInfectedDir()
+	if err != nil {
 		logger.Fatalf("Failed to check infected directory: %v", err)
 	}
 
@@ -402,6 +448,9 @@ func main() {
 	// Start result processor
 	go func() {
 		for result := range resultChan {
+			if result.File != "" {
+				atomic.AddInt64(&filesProcessed, 1)
+			}
 			if result.Error != nil {
 				progressTracker.LogResult("Error scanning: "+result.Error.Error(), false, true)
 			} else if result.IsClean {
@@ -415,38 +464,74 @@ func main() {
 		}
 	}()
 
-	// Use worker pool pattern for better resource management
-	workerPool := make(chan string, maxThreads*2) // File queue
+	if *useClamd {
+		// Worker pool over persistent clamd connections - one connection
+		// per worker, no subprocess per file.
+		workerPool := make(chan string, maxThreads*2) // File queue
 
-	// Start worker goroutines
-	for i := 0; i < maxThreads; i++ {
-		wg.Add(1)
+		for i := 0; i < maxThreads; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+
+				client, err := clamd.Dial(*clamdSocket)
+				if err != nil {
+					// Keep draining the queue so the scan completes with
+					// visible errors instead of hanging.
+					for file := range workerPool {
+						select {
+						case resultChan <- ScanResult{File: file, Error: fmt.Errorf("connecting to clamd: %w", err)}:
+						case <-ctx.Done():
+							return
+						}
+					}
+					return
+				}
+				defer client.Close()
+
+				for file := range workerPool {
+					result := scanWithClamd(client, file)
+					select {
+					case resultChan <- result:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+		}
+
+		// Feed files to worker pool
 		go func() {
-			defer wg.Done()
-			for file := range workerPool {
-				result := scanFile(ctx, file)
-				atomic.AddInt64(&filesProcessed, 1)
-
+			defer close(workerPool)
+			for _, file := range files {
 				select {
-				case resultChan <- result:
+				case workerPool <- file:
 				case <-ctx.Done():
 					return
 				}
 			}
 		}()
-	}
+	} else {
+		// Batch mode: split the file list across a few clamscan processes.
+		// Each process loads the signature database once for its whole
+		// chunk instead of once per file.
+		chunks := splitChunks(files, maxThreads)
+		fmt.Println(yellow("[*]"), "Starting", len(chunks), "clamscan batch(es); each loads the virus database once")
 
-	// Feed files to worker pool
-	go func() {
-		defer close(workerPool)
-		for _, file := range files {
-			select {
-			case workerPool <- file:
-			case <-ctx.Done():
-				return
-			}
+		for _, chunk := range chunks {
+			chunk := chunk
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := runClamscanBatch(ctx, chunk, infectedDir, resultChan); err != nil && ctx.Err() == nil {
+					select {
+					case resultChan <- ScanResult{Error: err}:
+					case <-ctx.Done():
+					}
+				}
+			}()
 		}
-	}()
+	}
 
 	// Wait for all workers to complete
 	wg.Wait()
