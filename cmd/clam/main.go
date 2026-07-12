@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/ChaosHour/go-clam/internal/clamd"
 	"github.com/ChaosHour/go-clam/internal/display"
@@ -37,6 +38,7 @@ var (
 	skipHidden    = flag.Bool("skip-hidden", false, "Skip hidden files and directories")
 	concurrency   = flag.Int("concurrency", 0, "Number of concurrent scans (0 = auto)")
 	fastMode      = flag.Bool("fast", false, "Enable fast mode (skip freshclam update, minimal output)")
+	forceUpdate   = flag.Bool("update", false, "Force a virus definition update even if definitions are fresh")
 )
 
 // Define a custom flag type to handle multiple string values
@@ -55,7 +57,7 @@ func (m *multiStringFlag) Set(value string) error {
 func init() {
 	flag.Var(&dirs, "d", "Directory to scan (can be specified multiple times)")
 	flag.Var(&excludeExt, "exclude", "File extensions to exclude (can be specified multiple times)")
-	flag.Var(&includeExt, "include", "Only scan these file extensions (can be specified multiple times)")
+	flag.Var(&includeExt, "include", "Only scan these file extensions (can be specified multiple times; files without an extension are then skipped)")
 }
 
 // define the colors
@@ -81,6 +83,33 @@ type ScanResult struct {
 // define freshclam function and print the output to the console
 func freshclamCommand(ctx context.Context) *exec.Cmd {
 	return exec.CommandContext(ctx, *freshclamPath, "-v")
+}
+
+// clamavDBDirs are the common virus-definition locations across platforms
+// and package managers.
+var clamavDBDirs = []string{
+	"/var/lib/clamav",
+	"/usr/local/share/clamav",
+	"/usr/local/var/lib/clamav",
+	"/opt/homebrew/var/lib/clamav",
+	"/opt/local/share/clamav",
+}
+
+// definitionsAge returns the age of the newest virus-definition file found
+// in dirs, or an error when none exist.
+func definitionsAge(dirs []string) (time.Duration, error) {
+	var newest time.Time
+	for _, dir := range dirs {
+		for _, name := range []string{"daily.cld", "daily.cvd", "main.cld", "main.cvd"} {
+			if info, err := os.Stat(filepath.Join(dir, name)); err == nil && info.ModTime().After(newest) {
+				newest = info.ModTime()
+			}
+		}
+	}
+	if newest.IsZero() {
+		return 0, fmt.Errorf("no virus definition files found")
+	}
+	return time.Since(newest), nil
 }
 
 // Get the users home directory
@@ -319,11 +348,13 @@ func scanWithClamd(client *clamd.Client, file string) ScanResult {
 		}
 	}
 
-	return ScanResult{
-		File:    file,
-		IsClean: res.Clean,
-		Message: res.Raw,
+	sr := ScanResult{File: file, IsClean: res.Clean}
+	// Only keep the raw reply when it matters; clean output is never
+	// printed and would just hold buffers alive in the result channel.
+	if !res.Clean {
+		sr.Message = res.Raw
 	}
+	return sr
 }
 
 type verdict int
@@ -415,7 +446,10 @@ func runClamscanBatch(ctx context.Context, files []string, results chan<- ScanRe
 		if !ok {
 			continue
 		}
-		result := ScanResult{File: file, IsClean: v == verdictClean, Message: line}
+		result := ScanResult{File: file, IsClean: v == verdictClean}
+		if v != verdictClean {
+			result.Message = line
+		}
 		if v == verdictError {
 			result.Error = fmt.Errorf("clamscan: %s", line)
 		}
@@ -457,6 +491,13 @@ func splitChunks(files []string, n int) [][]string {
 
 func main() {
 	flag.Parse()
+
+	// -include already restricts scanning to the listed extensions, so a
+	// simultaneous -exclude can never remove anything further; reject the
+	// combination instead of silently ignoring one of them.
+	if len(includeExt) > 0 && len(excludeExt) > 0 {
+		logger.Fatalf("-include and -exclude cannot be used together")
+	}
 
 	// Validate directory input
 	if len(dirs) == 0 {
@@ -508,17 +549,45 @@ func main() {
 		cancel()
 	}()
 
-	// Skip virus definition updates in fast mode
-	if !*fastMode {
-		// run freshclam to update the virus definitions
-		fmt.Println(yellow("[*]"), "Updating virus definitions")
-		cmd := freshclamCommand(ctx)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			fmt.Println(red("[!]"), "Error updating virus definitions:", err.Error())
-			fmt.Println(yellow("[*]"), "Continuing with scan using existing definitions")
-		} else if *verbose {
-			fmt.Println(string(output))
+	// Update virus definitions only when they are stale (>24h) or when
+	// -update forces it; -fast skips the check entirely unless forced.
+	if *forceUpdate || !*fastMode {
+		runUpdate := *forceUpdate
+		if !runUpdate {
+			if age, err := definitionsAge(clamavDBDirs); err != nil {
+				// Can't find the definitions - let freshclam sort it out
+				runUpdate = true
+			} else if age > 24*time.Hour {
+				fmt.Println(yellow("[*]"), "Virus definitions are", age.Round(time.Hour), "old")
+				runUpdate = true
+			} else {
+				fmt.Println(green("[+]"), "Virus definitions are fresh ("+age.Round(time.Minute).String()+" old), skipping update")
+			}
+		}
+
+		if runUpdate {
+			// run freshclam to update the virus definitions
+			fmt.Println(yellow("[*]"), "Updating virus definitions")
+			cmd := freshclamCommand(ctx)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				fmt.Println(red("[!]"), "Error updating virus definitions:", err.Error())
+				fmt.Println(yellow("[*]"), "Continuing with scan using existing definitions")
+			} else {
+				if *verbose {
+					fmt.Println(string(output))
+				}
+				// New definitions only take effect in the daemon after a
+				// reload; without this, clamd keeps scanning with the old DB.
+				if *useClamd {
+					if c, cerr := clamd.Dial(*clamdSocket); cerr == nil {
+						if rerr := c.Reload(); rerr == nil {
+							fmt.Println(yellow("[*]"), "clamd is reloading the virus database")
+						}
+						c.Close()
+					}
+				}
+			}
 		}
 	}
 

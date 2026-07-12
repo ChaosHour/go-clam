@@ -73,6 +73,19 @@ func (c *Client) Ping() error {
 	return nil
 }
 
+// Reload asks clamd to reload the virus database, so freshly downloaded
+// definitions take effect without restarting the daemon.
+func (c *Client) Reload() error {
+	reply, err := c.command("RELOAD")
+	if err != nil {
+		return err
+	}
+	if reply != "RELOADING" {
+		return fmt.Errorf("unexpected clamd reply to RELOAD: %q", reply)
+	}
+	return nil
+}
+
 // Scan asks clamd to scan the file at path (must be absolute and readable
 // by the clamd process). If the session was dropped (idle timeout, daemon
 // reload), it reconnects once before giving up.

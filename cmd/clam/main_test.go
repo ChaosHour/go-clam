@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestParseClamscanLine(t *testing.T) {
@@ -97,6 +98,44 @@ func TestFindFilesToScan(t *testing.T) {
 	}
 	if got := stats.Total(); got != 2 {
 		t.Errorf("expected 2 total skips, got %d (%s)", got, stats)
+	}
+}
+
+func TestDefinitionsAge(t *testing.T) {
+	dir := t.TempDir()
+
+	if _, err := definitionsAge([]string{dir}); err == nil {
+		t.Error("expected an error when no definition files exist")
+	}
+
+	daily := filepath.Join(dir, "daily.cvd")
+	if err := os.WriteFile(daily, []byte("db"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(daily, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	age, err := definitionsAge([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age < 47*time.Hour || age > 49*time.Hour {
+		t.Errorf("expected ~48h age, got %s", age)
+	}
+
+	// A newer daily.cld must win over the older daily.cvd
+	cld := filepath.Join(dir, "daily.cld")
+	if err := os.WriteFile(cld, []byte("db"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	age, err = definitionsAge([]string{dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age > time.Hour {
+		t.Errorf("expected fresh age from newest file, got %s", age)
 	}
 }
 
