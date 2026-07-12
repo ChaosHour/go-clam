@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 func TestParseClamscanLine(t *testing.T) {
 	tests := []struct {
@@ -53,5 +57,44 @@ func TestSplitChunks(t *testing.T) {
 
 	if got := splitChunks(nil, 4); len(got) != 0 {
 		t.Errorf("expected no chunks for empty input, got %d", len(got))
+	}
+}
+
+func TestQuarantine(t *testing.T) {
+	src := t.TempDir()
+	qdir := t.TempDir()
+
+	file := filepath.Join(src, "bad.bin")
+	if err := os.WriteFile(file, []byte("payload"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	dest, err := quarantine(file, qdir)
+	if err != nil {
+		t.Fatalf("quarantine failed: %v", err)
+	}
+	if dest != filepath.Join(qdir, "bad.bin") {
+		t.Errorf("unexpected destination: %s", dest)
+	}
+	if _, err := os.Stat(file); !os.IsNotExist(err) {
+		t.Error("original file still exists after quarantine")
+	}
+	if data, err := os.ReadFile(dest); err != nil || string(data) != "payload" {
+		t.Errorf("quarantined content wrong: %q err=%v", data, err)
+	}
+
+	// A second file with the same name must get a suffix, not overwrite
+	if err := os.WriteFile(file, []byte("payload2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dest2, err := quarantine(file, qdir)
+	if err != nil {
+		t.Fatalf("second quarantine failed: %v", err)
+	}
+	if dest2 == dest {
+		t.Error("second quarantine overwrote the first entry")
+	}
+	if data, _ := os.ReadFile(dest); string(data) != "payload" {
+		t.Error("first quarantined file was modified")
 	}
 }

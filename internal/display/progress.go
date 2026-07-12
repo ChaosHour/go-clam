@@ -79,7 +79,7 @@ func (pt *ProgressTracker) LogResult(message string, isClean bool, isError bool)
 }
 
 // Finish completes the progress tracking and shows final statistics
-func (pt *ProgressTracker) Finish(filesScanned int64) {
+func (pt *ProgressTracker) Finish(filesScanned, clean, infected, errors int64) {
 	pt.OutputMutex.Lock()
 	defer pt.OutputMutex.Unlock()
 
@@ -87,9 +87,6 @@ func (pt *ProgressTracker) Finish(filesScanned int64) {
 	if !pt.Bar.IsFinished() {
 		pt.Bar.Set(pt.Total)
 	}
-
-	// Let the progress bar render one final time at 100%
-	time.Sleep(50 * time.Millisecond)
 
 	// Now finish and clear the bar
 	pt.Bar.Finish()
@@ -101,16 +98,14 @@ func (pt *ProgressTracker) Finish(filesScanned int64) {
 	fmt.Printf("%s Scan complete. Scanned %d files in %s (%.2f files/sec)\n",
 		Green("[+]"), filesScanned, elapsedTime,
 		float64(filesScanned)/elapsedTime.Seconds())
+	fmt.Printf("    %s: %d   %s: %d   %s: %d\n",
+		Green("Clean"), clean, Red("Infected"), infected, Yellow("Errors"), errors)
 
 	fmt.Println() // Extra blank line for spacing
 }
 
-// LogVerbose logs a message only in verbose mode
-func (pt *ProgressTracker) LogVerbose(message string) {
-	if !pt.Verbose {
-		return
-	}
-
+// LogInfo logs an informational message without advancing the progress bar
+func (pt *ProgressTracker) LogInfo(message string) {
 	pt.OutputMutex.Lock()
 	defer pt.OutputMutex.Unlock()
 
@@ -122,4 +117,12 @@ func (pt *ProgressTracker) LogVerbose(message string) {
 	if !pt.Bar.IsFinished() {
 		pt.Bar.RenderBlank()
 	}
+}
+
+// LogVerbose logs a message only in verbose mode
+func (pt *ProgressTracker) LogVerbose(message string) {
+	if !pt.Verbose {
+		return
+	}
+	pt.LogInfo(message)
 }

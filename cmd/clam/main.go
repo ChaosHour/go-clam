@@ -7,6 +7,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -15,9 +16,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
-	"time"
 
 	"github.com/ChaosHour/go-clam/internal/clamd"
 	"github.com/ChaosHour/go-clam/internal/display"
@@ -130,8 +129,49 @@ func getThreads() int {
 	return cores
 }
 
-// findFilesToScan returns a list of files to scan from all directories
-func findFilesToScan(dirs []string) ([]string, error) {
+// quarantine moves an infected file into the quarantine directory, adding
+// a numeric suffix instead of overwriting an existing entry and falling
+// back to copy+delete when the rename crosses filesystems.
+func quarantine(file, dir string) (string, error) {
+	base := filepath.Base(file)
+	dest := filepath.Join(dir, base)
+	for i := 1; ; i++ {
+		if _, err := os.Lstat(dest); os.IsNotExist(err) {
+			break
+		}
+		dest = filepath.Join(dir, fmt.Sprintf("%s.%d", base, i))
+	}
+
+	if err := os.Rename(file, dest); err == nil {
+		return dest, nil
+	}
+
+	in, err := os.Open(file)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dest)
+		return "", err
+	}
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	if err := os.Remove(file); err != nil {
+		return "", fmt.Errorf("copied to %s but failed to remove original: %w", dest, err)
+	}
+	return dest, nil
+}
+
+// findFilesToScan returns a list of files to scan from all directories,
+// never descending into the quarantine directory.
+func findFilesToScan(dirs []string, infectedDir string) ([]string, error) {
 	var allFiles []string
 	maxSizeBytes := *maxFileSize * 1024 * 1024 // Convert MB to bytes
 
@@ -156,6 +196,10 @@ func findFilesToScan(dirs []string) ([]string, error) {
 
 			// Skip directories (we'll scan their contents)
 			if info.IsDir() {
+				// Never scan the quarantine directory itself
+				if abs, err := filepath.Abs(path); err == nil && abs == infectedDir {
+					return filepath.SkipDir
+				}
 				// Skip hidden directories if requested
 				if *skipHidden && strings.HasPrefix(filepath.Base(path), ".") {
 					return filepath.SkipDir
@@ -263,8 +307,9 @@ func parseClamscanLine(line string) (file string, v verdict, ok bool) {
 // runClamscanBatch scans a chunk of files with a single clamscan process
 // via --file-list, so the signature database loads once per process instead
 // of once per file. Per-file results stream to the results channel as
-// clamscan prints them.
-func runClamscanBatch(ctx context.Context, files []string, infectedDir string, results chan<- ScanResult) error {
+// clamscan prints them. Quarantine is handled in Go by the result
+// processor, identically for clamscan and clamd modes.
+func runClamscanBatch(ctx context.Context, files []string, results chan<- ScanResult) error {
 	listFile, err := os.CreateTemp("", "go-clam-list-*.txt")
 	if err != nil {
 		return fmt.Errorf("creating file list: %w", err)
@@ -288,8 +333,6 @@ func runClamscanBatch(ctx context.Context, files []string, infectedDir string, r
 		"--scan-html=yes",
 		"--scan-archive=yes",
 		"--phishing-scan-urls=yes",
-		"--exclude-dir=" + infectedDir,
-		"--move=" + infectedDir,
 		"--file-list=" + listFile.Name(),
 	}
 
@@ -417,7 +460,7 @@ func main() {
 
 	// Find all files to scan from the specified directories
 	fmt.Println(yellow("[*]"), "Discovering files in directories:", dirs)
-	files, err := findFilesToScan(dirs)
+	files, err := findFilesToScan(dirs, infectedDir)
 	if err != nil {
 		logger.Fatalf("Error finding files: %v", err)
 	}
@@ -436,8 +479,9 @@ func main() {
 	// create a wait group to wait for all the goroutines to finish
 	var wg sync.WaitGroup
 
-	// Create atomic counter for progress
-	var filesProcessed int64 = 0
+	// Scan outcome counters, owned by the result processor goroutine and
+	// only read after <-processorDone.
+	var filesProcessed, cleanCount, infectedCount, errorCount int64
 
 	// Replace the progress bar creation with our new tracker
 	progressTracker := display.NewProgressTracker(numFiles, *verbose)
@@ -445,20 +489,34 @@ func main() {
 	// Channel for results to avoid console output issues
 	resultChan := make(chan ScanResult, maxThreads*4) // Increased buffer
 
-	// Start result processor
+	// Start result processor; processorDone closes once every queued
+	// result has been handled, so no output is lost at shutdown.
+	processorDone := make(chan struct{})
 	go func() {
+		defer close(processorDone)
 		for result := range resultChan {
 			if result.File != "" {
-				atomic.AddInt64(&filesProcessed, 1)
+				filesProcessed++
 			}
 			if result.Error != nil {
+				errorCount++
 				progressTracker.LogResult("Error scanning: "+result.Error.Error(), false, true)
 			} else if result.IsClean {
+				cleanCount++
 				progressTracker.LogResult("File is clean: "+result.File, true, false)
 			} else {
+				infectedCount++
 				progressTracker.LogResult("File is infected: "+result.File, false, false)
 				if *verbose {
 					fmt.Println(result.Message)
+				}
+				// Quarantine in Go so clamscan and clamd modes behave
+				// identically.
+				if dest, qerr := quarantine(result.File, infectedDir); qerr != nil {
+					errorCount++
+					progressTracker.LogInfo("Failed to quarantine " + result.File + ": " + qerr.Error())
+				} else {
+					progressTracker.LogInfo("Quarantined: " + result.File + " -> " + dest)
 				}
 			}
 		}
@@ -523,7 +581,7 @@ func main() {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				if err := runClamscanBatch(ctx, chunk, infectedDir, resultChan); err != nil && ctx.Err() == nil {
+				if err := runClamscanBatch(ctx, chunk, resultChan); err != nil && ctx.Err() == nil {
 					select {
 					case resultChan <- ScanResult{Error: err}:
 					case <-ctx.Done():
@@ -533,13 +591,21 @@ func main() {
 		}
 	}
 
-	// Wait for all workers to complete
+	// Wait for all workers to complete, then for the result processor to
+	// drain every queued result.
 	wg.Wait()
 	close(resultChan)
-
-	// Wait a moment for the result processor to finish
-	time.Sleep(100 * time.Millisecond)
+	<-processorDone
 
 	// Show final statistics
-	progressTracker.Finish(atomic.LoadInt64(&filesProcessed))
+	progressTracker.Finish(filesProcessed, cleanCount, infectedCount, errorCount)
+
+	// Follow the clamscan exit-code convention so cron/CI can react:
+	// 0 = clean, 1 = infections found, 2 = errors occurred.
+	switch {
+	case infectedCount > 0:
+		os.Exit(1)
+	case errorCount > 0:
+		os.Exit(2)
+	}
 }

@@ -4,7 +4,7 @@ Reviewed: `cmd/clam/main.go`, `internal/display/progress.go`, `internal/pool/sca
 
 Goal: make scans faster and make sure what we report as "scanned" is actually scanned.
 
-**Status (2026-07-12):** the three P0 items are implemented on `fab_it2` — native clamd socket client (`internal/clamd`), batched `clamscan --file-list` scanning, and regular-file/empty-file filtering in discovery. Implementing #1 and #2 also removed the per-file sudo path (#7) and the per-file `getHomeDir()` calls (#12) as side effects.
+**Status (2026-07-12):** P0 items 1–3 and P1 items 4–7 are implemented on `fab_it2` — native clamd socket client (`internal/clamd`), batched `clamscan --file-list` scanning, regular-file/empty-file filtering, clamscan-convention exit codes (0/1/2) with clean/infected/error counts in the summary, unified Go-side quarantine for both modes (discovery now skips the quarantine dir, replacing `--exclude-dir`/`--move`), and a done-channel shutdown for the result processor (both sleeps removed). Implementing #1 and #2 also removed the per-file sudo path (#7) and the per-file `getHomeDir()` calls (#12).
 
 ## Priority summary
 
@@ -13,10 +13,10 @@ Goal: make scans faster and make sure what we report as "scanned" is actually sc
 | 1 | P0 ✅ done | clamscan mode spawns one `clamscan` process **per file**, each reloading the full virus DB | Biggest slowdown in the tool; also huge RAM use |
 | 2 | P0 ✅ done | clamd mode shells out to `clamdscan` per file instead of talking to the socket | Fork/exec overhead on every file; `-socket` flag silently ignored |
 | 3 | P0 ✅ done | Non-regular files (FIFOs, sockets, devices) are queued for scanning | A named pipe makes a worker block forever — scan never finishes |
-| 4 | P1 | Always exits 0, even when infected files are found | Cron/CI can't detect infections; no infected/error counts in summary |
-| 5 | P1 | Infected files are quarantined in clamscan mode but **not** in clamd mode | Inconsistent protection depending on mode |
-| 6 | P1 | Result processor is "synchronized" with a 100 ms `time.Sleep` | Results can be silently dropped from output |
-| 7 | P1 | `sudo` fallback inside parallel workers | Hangs waiting for a password prompt mid-scan |
+| 4 | P1 ✅ done | Always exits 0, even when infected files are found | Cron/CI can't detect infections; no infected/error counts in summary |
+| 5 | P1 ✅ done | Infected files are quarantined in clamscan mode but **not** in clamd mode | Inconsistent protection depending on mode |
+| 6 | P1 ✅ done | Result processor is "synchronized" with a 100 ms `time.Sleep` | Results can be silently dropped from output |
+| 7 | P1 ✅ done | `sudo` fallback inside parallel workers | Hangs waiting for a password prompt mid-scan |
 | 8 | P2 | `filepath.Walk` + upfront file list | Slower discovery, delayed first scan, memory on big trees |
 | 9 | P2 | Default `-max-size 100` exceeds ClamAV's own 25 MB scan limits | Files 25–100 MB are only *partially* scanned, silently |
 | 10 | P2 | Walk errors and skips are swallowed silently | User can't tell what was never scanned |
