@@ -26,11 +26,13 @@ A high-performance wrapper for ClamAV.
 
 For best performance, use the following options:
 
-1. **Use clamd**: The ClamAV daemon is much faster than clamscan
+1. **Use clamd**: The ClamAV daemon is much faster than clamscan. go-clam talks to the daemon directly over its Unix socket (one persistent connection per worker, no subprocess per file) and streams files into the scanners while discovery is still walking the tree, so scanning starts immediately.
 
    ```bash
    ./bin/go-clam -clamd
    ```
+
+   In non-clamd mode, go-clam batches files into a few `clamscan --file-list` processes so the signature database loads once per process instead of once per file. It is still much slower than clamd because each process must load the full database (~10s, ~1.5GB RAM) before scanning starts.
 
 2. **Filter files by extension**: Only scan files that might contain viruses
 
@@ -55,6 +57,8 @@ For best performance, use the following options:
    ```bash
    ./bin/go-clam -concurrency 16
    ```
+
+6. **Virus definition updates are automatic and cheap**: go-clam checks the age of your definition files and only runs freshclam when they are older than 24 hours. Use `-update` to force an update, or `-fast` to skip the check entirely. In clamd mode, a successful update also triggers a daemon database reload so the new signatures take effect immediately.
 
 ## Performance Tuning
 
@@ -118,22 +122,37 @@ You can scan multiple directories by specifying the `-d` flag multiple times:
 
 ## Understanding the Output
 
-When running a scan, you'll see:
+When running a scan in clamscan mode, you'll see:
 
 ```bash
-[*] Updating virus definitions
+[+] Virus definitions are fresh (2h30m0s old), skipping update
 [*] Discovering files in directories: [your-directory-path]
 [*] Found X files to scan
+[*] Skipped N files: 1 non-regular, 2 empty, 3 over max-size
 Number of CPU cores: Y
 Number of threads to use: Z
+[*] Starting Z clamscan batch(es); each loads the virus database once
 
 Scanning files  XX% ==============================---------- (N/T) [Time:Remaining]
 ```
 
-- The progress bar shows the current scan progress
-- Files detected as infected will be shown in red
-- Infected files are automatically moved to your ~/infected directory
-- At the end of the scan, you'll see performance statistics (files per second)
+In clamd mode, scanning starts while discovery is still running, so the progress display is a running counter and the file count arrives mid-scan:
+
+```bash
+[*] Scanning while discovering files in: [your-directory-path]
+| Scanning files (N/-) [Time]
+[*] Discovery complete: X files to scan (skipped N: 1 non-regular, 1 empty)
+```
+
+- Files detected as infected are shown in red and quarantined immediately (`Quarantined: <file> -> ~/infected/<file>`)
+- At the end of the scan you'll see performance statistics and per-verdict counts:
+
+```bash
+[+] Scan complete. Scanned 201 files in 480ms (418.71 files/sec)
+    Clean: 200   Infected: 1   Errors: 0
+```
+
+- The exit code reflects the outcome: `0` all clean, `1` infections found, `2` errors occurred
 
 ## Recommended Scanning Strategy
 
@@ -360,91 +379,9 @@ If you're still encountering socket connection issues, you can fall back to usin
 ./bin/go-clam -d /path/to/scan
 ```
 
-### Troubleshooting "exit status 2" Errors
+### About the old "exit status 2" clamdscan errors
 
-If you're seeing multiple "Error scanning: exit status 2" messages when using clamd mode:
-
-```bash
-# First, try running clamdscan directly to see if it works
-clamdscan --stream --fdpass ~/Downloads/test/somefile.txt
-
-# Check the clamdscan version matches the clamd version
-clamdscan --version
-clamd --version
-
-# Verify clamd configuration by running manually with debug
-sudo /usr/local/opt/clamav/sbin/clamd --config-file=/usr/local/etc/clamav/clamd.conf --debug
-
-# Try using clamdscan without the stream option in go-clam
-# Create a test file that simply uses direct scanning:
-cat > test_clamd.go << 'EOF'
-package main
-
-import (
-    "fmt"
-    "os"
-    "os/exec"
-)
-
-func main() {
-    if len(os.Args) < 2 {
-        fmt.Println("Please provide a file to scan")
-        return
-    }
-    
-    cmd := exec.Command("clamdscan", os.Args[1])
-    output, err := cmd.CombinedOutput()
-    fmt.Println(string(output))
-    if err != nil {
-        fmt.Println("Error:", err)
-    }
-}
-EOF
-go run test_clamd.go ~/Downloads/test/somefile.txt
-
-# If all else fails, fall back to regular clamscan mode which is more reliable
-./bin/go-clam -d ~/Downloads/test
-```
-
-You might need to adjust the clamdscan command options in the go-clam source code if there's a compatibility issue with your version of ClamAV.
-
-### Fixing clamd Integration Issues
-
-If clamdscan works fine when run directly:
-
-```bash
-clamdscan --stream --fdpass ~/Downloads/test/1000003788.jpg
-# Shows: OK and proper scan summary
-```
-
-But go-clam shows "exit status 2" errors, there may be an issue with command-line options.
-
-Here's a possible source code fix (`~/projects/go-clam/cmd/clam/main.go`):
-
-```go
-// Modified scanWithClamd function for better compatibility
-func scanWithClamd(ctx context.Context, file string) ScanResult {
-    // Remove the --stream and --fdpass options that might be causing issues
-    cmd := exec.CommandContext(ctx, "clamdscan", "--no-summary", file)
-    output, err := cmd.CombinedOutput()
-    
-    // Rest of function remains the same
-    // ...
-}
-```
-
-You can rebuild go-clam after making this change to see if it fixes the issue:
-
-```bash
-make build
-./bin/go-clam -clamd -d ~/Downloads/test
-```
-
-Another workaround is to try the non-clamd mode which is more robust:
-
-```bash
-./bin/go-clam -d ~/Downloads/test
-```
+Older versions of go-clam shelled out to `clamdscan` for every file, which could fail with "exit status 2" when the clamdscan CLI options (`--stream`/`--fdpass`) didn't match the installed ClamAV version. go-clam now speaks the clamd socket protocol directly and never invokes clamdscan, so these errors can no longer occur. If you see scan errors in clamd mode today, they come from the daemon itself (permissions, limits) - the error message includes clamd's reply, e.g. `lstat() failed: Permission denied. ERROR` means the clamd process cannot read the file being scanned (see the socket permissions section above).
 
 ## All Options
 
@@ -464,12 +401,17 @@ Usage of go-clam:
         File extensions to exclude (can be specified multiple times)
   -freshclam string
         Path to freshclam binary (default "freshclam")
+  -fast
+        Enable fast mode (skip freshclam update, minimal output)
   -include value
-        Only scan these file extensions (can be specified multiple times)
+        Only scan these file extensions (can be specified multiple times;
+        files without an extension are then skipped)
   -max-size int
         Maximum file size to scan in MB (0 for unlimited) (default 100)
   -skip-hidden
         Skip hidden files and directories
+  -update
+        Force a virus definition update even if definitions are fresh
   -v    Enable verbose output
 ```
 
@@ -498,3 +440,5 @@ Choose a max-size value based on:
 - System resources available (larger files need more memory)
 - Scan speed requirements (larger files take longer to scan)
 - The types of files you're scanning (video/image archives are often large)
+
+**Engine limits vs. `-max-size`:** accepting a file is not the same as fully scanning it - ClamAV has its own internal caps. In clamscan mode, go-clam passes `--max-filesize`/`--max-scansize` matching your `-max-size`, so accepted files are scanned in full. In clamd mode the daemon's limits come from `clamd.conf` (`MaxFileSize`, `MaxScanSize`, `StreamMaxLength`; defaults are far below 1GB) - if you raise `-max-size` past ~25MB, go-clam prints a reminder, and you should raise the matching values in `clamd.conf` and restart clamd to actually scan large files completely.
