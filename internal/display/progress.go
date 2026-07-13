@@ -25,7 +25,9 @@ type ProgressTracker struct {
 	StartTime   time.Time
 }
 
-// NewProgressTracker creates a new progress tracker
+// NewProgressTracker creates a new progress tracker. Pass total = -1 when
+// the file count is not known yet (streaming discovery); the bar renders
+// as a spinner with a running count until SetTotal is called.
 func NewProgressTracker(total int, verbose bool) *ProgressTracker {
 	bar := progressbar.NewOptions(total,
 		progressbar.OptionSetDescription("Scanning files"),
@@ -40,6 +42,17 @@ func NewProgressTracker(total int, verbose bool) *ProgressTracker {
 		Verbose:   verbose,
 		StartTime: time.Now(),
 	}
+}
+
+// SetTotal records the real file count once discovery finishes mid-scan.
+// The bar keeps rendering as a counter, but Finish needs the total to
+// close out the bar state correctly.
+func (pt *ProgressTracker) SetTotal(total int) {
+	pt.OutputMutex.Lock()
+	defer pt.OutputMutex.Unlock()
+
+	pt.Total = total
+	pt.Bar.ChangeMax(total)
 }
 
 // LogResult logs a scan result with proper synchronization
@@ -72,8 +85,9 @@ func (pt *ProgressTracker) Finish(filesScanned, clean, infected, errors int64) {
 	pt.OutputMutex.Lock()
 	defer pt.OutputMutex.Unlock()
 
-	// Ensure the bar shows 100% completion
-	if !pt.Bar.IsFinished() {
+	// Ensure the bar shows 100% completion (skip when the total was never
+	// learned, e.g. a scan cancelled during streaming discovery)
+	if pt.Total > 0 && !pt.Bar.IsFinished() {
 		pt.Bar.Set(pt.Total)
 	}
 

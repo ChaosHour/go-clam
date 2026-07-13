@@ -231,12 +231,13 @@ func (s discoveryStats) String() string {
 	return strings.Join(parts, ", ")
 }
 
-// findFilesToScan returns a list of files to scan from all directories,
-// never descending into the quarantine directory. It uses WalkDir so
-// directory entries come without a stat; files are only stat'ed after the
-// cheap name-based filters pass.
-func findFilesToScan(dirs []string, infectedDir string) ([]string, discoveryStats, error) {
-	var allFiles []string
+// discoverFiles walks all directories and calls emit for every file that
+// should be scanned, never descending into the quarantine directory. It
+// uses WalkDir so directory entries come without a stat; files are only
+// stat'ed after the cheap name-based filters pass. When emit returns false
+// (scan cancelled), the walk stops early. Streaming through a callback
+// lets clamd mode start scanning while discovery is still running.
+func discoverFiles(dirs []string, infectedDir string, emit func(string) bool) (discoveryStats, error) {
 	var stats discoveryStats
 	maxSizeBytes := *maxFileSize * 1024 * 1024 // Convert MB to bytes
 
@@ -318,16 +319,29 @@ func findFilesToScan(dirs []string, infectedDir string) ([]string, discoveryStat
 				return nil
 			}
 
-			allFiles = append(allFiles, path)
+			if !emit(path) {
+				return filepath.SkipAll
+			}
 			return nil
 		})
 
 		if err != nil {
-			return nil, stats, err
+			return stats, err
 		}
 	}
 
-	return allFiles, stats, nil
+	return stats, nil
+}
+
+// findFilesToScan materializes the discovery stream into a slice, for the
+// clamscan batch path which needs complete --file-list chunks upfront.
+func findFilesToScan(dirs []string, infectedDir string) ([]string, discoveryStats, error) {
+	var allFiles []string
+	stats, err := discoverFiles(dirs, infectedDir, func(path string) bool {
+		allFiles = append(allFiles, path)
+		return true
+	})
+	return allFiles, stats, err
 }
 
 // scanWithClamd scans one file over an established clamd connection - no
@@ -591,27 +605,6 @@ func main() {
 		}
 	}
 
-	// Find all files to scan from the specified directories
-	fmt.Println(yellow("[*]"), "Discovering files in directories:", dirs)
-	files, skipStats, err := findFilesToScan(dirs, infectedDir)
-	if err != nil {
-		logger.Fatalf("Error finding files: %v", err)
-	}
-
-	numFiles := len(files)
-	if numFiles == 0 {
-		fmt.Println(yellow("[*]"), "No files found to scan in directories:", dirs)
-		if skipStats.Total() > 0 {
-			fmt.Println(yellow("[*]"), "Skipped", skipStats.Total(), "files:", skipStats.String())
-		}
-		os.Exit(0)
-	}
-
-	fmt.Println(yellow("[*]"), "Found", numFiles, "files to scan")
-	if skipStats.Total() > 0 {
-		fmt.Println(yellow("[*]"), "Skipped", skipStats.Total(), "files:", skipStats.String())
-	}
-
 	// set the number of threads based on the number of cores available
 	maxThreads := getThreads()
 
@@ -622,8 +615,37 @@ func main() {
 	// only read after <-processorDone.
 	var filesProcessed, cleanCount, infectedCount, errorCount int64
 
-	// Replace the progress bar creation with our new tracker
-	progressTracker := display.NewProgressTracker(numFiles, *verbose)
+	// clamd mode streams discovery straight into the workers: scanning
+	// starts immediately and the file list is never held in memory; the
+	// tracker renders as a running counter. clamscan batch mode still
+	// materializes the list upfront because --file-list chunks need to
+	// be complete before launch.
+	var files []string
+	var progressTracker *display.ProgressTracker
+
+	if *useClamd {
+		fmt.Println(yellow("[*]"), "Scanning while discovering files in:", dirs)
+		progressTracker = display.NewProgressTracker(-1, *verbose)
+	} else {
+		fmt.Println(yellow("[*]"), "Discovering files in directories:", dirs)
+		var skipStats discoveryStats
+		files, skipStats, err = findFilesToScan(dirs, infectedDir)
+		if err != nil {
+			logger.Fatalf("Error finding files: %v", err)
+		}
+		if len(files) == 0 {
+			fmt.Println(yellow("[*]"), "No files found to scan in directories:", dirs)
+			if skipStats.Total() > 0 {
+				fmt.Println(yellow("[*]"), "Skipped", skipStats.Total(), "files:", skipStats.String())
+			}
+			os.Exit(0)
+		}
+		fmt.Println(yellow("[*]"), "Found", len(files), "files to scan")
+		if skipStats.Total() > 0 {
+			fmt.Println(yellow("[*]"), "Skipped", skipStats.Total(), "files:", skipStats.String())
+		}
+		progressTracker = display.NewProgressTracker(len(files), *verbose)
+	}
 
 	// Channel for results to avoid console output issues
 	resultChan := make(chan ScanResult, maxThreads*4) // Increased buffer
@@ -697,16 +719,32 @@ func main() {
 			}()
 		}
 
-		// Feed files to worker pool
+		// Stream discovery straight into the worker pool; scanning is
+		// already underway while the walk is still running.
 		go func() {
 			defer close(workerPool)
-			for _, file := range files {
+			found := 0
+			skipStats, derr := discoverFiles(dirs, infectedDir, func(path string) bool {
 				select {
-				case workerPool <- file:
+				case workerPool <- path:
+					found++
+					return true
 				case <-ctx.Done():
-					return
+					return false
+				}
+			})
+			if derr != nil && ctx.Err() == nil {
+				select {
+				case resultChan <- ScanResult{Error: fmt.Errorf("file discovery: %w", derr)}:
+				case <-ctx.Done():
 				}
 			}
+			progressTracker.SetTotal(found)
+			msg := fmt.Sprintf("Discovery complete: %d files to scan", found)
+			if skipStats.Total() > 0 {
+				msg += fmt.Sprintf(" (skipped %d: %s)", skipStats.Total(), skipStats.String())
+			}
+			progressTracker.LogInfo(msg)
 		}()
 	} else {
 		// Batch mode: split the file list across a few clamscan processes.

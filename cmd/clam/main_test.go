@@ -139,6 +139,44 @@ func TestDefinitionsAge(t *testing.T) {
 	}
 }
 
+func TestDiscoverFilesStream(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Files arrive through the emit callback as discovery runs
+	var streamed []string
+	stats, err := discoverFiles([]string{dir}, filepath.Join(dir, "no-quarantine"), func(p string) bool {
+		streamed = append(streamed, p)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(streamed) != 3 {
+		t.Errorf("expected 3 streamed files, got %d: %v", len(streamed), streamed)
+	}
+	if stats.Total() != 0 {
+		t.Errorf("expected no skips, got %d (%s)", stats.Total(), stats)
+	}
+
+	// Returning false must stop the walk immediately (cancelled scan)
+	calls := 0
+	_, err = discoverFiles([]string{dir}, filepath.Join(dir, "no-quarantine"), func(p string) bool {
+		calls++
+		return false
+	})
+	if err != nil {
+		t.Fatalf("early stop must not report an error, got %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("expected walk to stop after 1 emit, got %d", calls)
+	}
+}
+
 func TestQuarantine(t *testing.T) {
 	src := t.TempDir()
 	qdir := t.TempDir()
