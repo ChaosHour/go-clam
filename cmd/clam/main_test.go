@@ -215,3 +215,13 @@ func TestQuarantine(t *testing.T) {
 		t.Error("first quarantined file was modified")
 	}
 }
+
+func TestInfectedMessage(t *testing.T) {
+	if got, want := infectedMessage(ScanResult{File: "/d/eicar", Signature: "Eicar-Test-Signature"}),
+		"File is infected: /d/eicar (Eicar-Test-Signature)"; got != want {
+		t.Errorf("with signature: got %q, want %q", got, want)
+	}
+	if got, want := infectedMessage(ScanResult{File: "/d/eicar"}), "File is infected: /d/eicar"; got != want {
+		t.Errorf("without signature: got %q, want %q", got, want)
+	}
+}
