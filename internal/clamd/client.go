@@ -17,6 +17,7 @@ type Client struct {
 	socketPath string
 	conn       net.Conn
 	br         *bufio.Reader
+	lastID     int // request id of the most recent command in this session
 }
 
 // Result is the outcome of scanning one path.
@@ -46,19 +47,44 @@ func (c *Client) connect() error {
 	}
 	c.conn = conn
 	c.br = bufio.NewReader(conn)
+	c.lastID = 0
 	return nil
 }
 
-// command sends one null-terminated command and reads the single reply.
+// command sends one null-terminated command and returns the reply carrying
+// its request id. clamd numbers the commands of an IDSESSION from 1, and
+// can send more than one reply for a single request: clamd 1.5 answers a
+// SCAN of an unreadable or vanished file with two ERROR lines. Replies for
+// earlier requests are therefore discarded rather than taken as this
+// command's answer. Without that, one stray reply would shift every later
+// verdict on the connection onto the wrong file.
 func (c *Client) command(cmd string) (string, error) {
+	if c.conn == nil {
+		if err := c.connect(); err != nil {
+			return "", err
+		}
+	}
+	c.lastID++
+	want := c.lastID
 	if _, err := c.conn.Write([]byte("z" + cmd + "\x00")); err != nil {
 		return "", err
 	}
-	reply, err := c.br.ReadString(0)
-	if err != nil {
-		return "", err
+	for {
+		reply, err := c.br.ReadString(0)
+		if err != nil {
+			return "", err
+		}
+		id, body, ok := parseSessionReply(strings.TrimSuffix(reply, "\x00"))
+		switch {
+		case !ok:
+			return "", fmt.Errorf("clamd reply without request id: %q", reply)
+		case id < want:
+			continue // late duplicate of an earlier request
+		case id > want:
+			return "", fmt.Errorf("clamd reply for request %d while waiting for %d", id, want)
+		}
+		return body, nil
 	}
-	return stripSessionID(strings.TrimSuffix(reply, "\x00")), nil
 }
 
 // Ping checks that clamd is alive and answering on the socket.
@@ -88,7 +114,9 @@ func (c *Client) Reload() error {
 
 // Scan asks clamd to scan the file at path (must be absolute and readable
 // by the clamd process). If the session was dropped (idle timeout, daemon
-// reload), it reconnects once before giving up.
+// reload) or got out of step, it reconnects once before giving up. A
+// verdict is only returned when the reply names path itself, so a reply
+// can never be attributed to a different file.
 func (c *Client) Scan(path string) (Result, error) {
 	reply, err := c.command("SCAN " + path)
 	if err != nil {
@@ -98,8 +126,13 @@ func (c *Client) Scan(path string) (Result, error) {
 		}
 		reply, err = c.command("SCAN " + path)
 		if err != nil {
+			c.Close()
 			return Result{}, err
 		}
+	}
+	if !strings.HasPrefix(reply, path+": ") {
+		c.Close()
+		return Result{Raw: reply}, fmt.Errorf("clamd reply does not match scanned file: %q", reply)
 	}
 	return parseReply(reply)
 }
@@ -115,15 +148,19 @@ func (c *Client) Close() error {
 	return err
 }
 
-// stripSessionID removes the "<request-id>: " prefix clamd adds to every
-// reply inside an IDSESSION.
-func stripSessionID(reply string) string {
-	if i := strings.Index(reply, ": "); i > 0 {
-		if _, err := strconv.Atoi(reply[:i]); err == nil {
-			return reply[i+2:]
-		}
+// parseSessionReply splits the "<request-id>: " prefix clamd adds to every
+// reply inside an IDSESSION from the reply body. ok is false when the
+// prefix is missing.
+func parseSessionReply(reply string) (id int, body string, ok bool) {
+	i := strings.Index(reply, ": ")
+	if i <= 0 {
+		return 0, reply, false
 	}
-	return reply
+	id, err := strconv.Atoi(reply[:i])
+	if err != nil || id <= 0 {
+		return 0, reply, false
+	}
+	return id, reply[i+2:], true
 }
 
 // parseReply classifies a clamd verdict line: "path: OK",

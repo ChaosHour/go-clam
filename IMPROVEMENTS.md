@@ -10,6 +10,8 @@ Goal: make scans faster and make sure what we report as "scanned" is actually sc
 
 **P3 + #14 (same day):** `internal/pool` deleted (#11); clean results no longer carry clamscan/clamd output and the unused `Completed`/`LastUpdateMs` tracker fields plus the redundant render throttle are gone (#12); `-include`+`-exclude` together is now rejected and the extensionless/symlink/exit-code behaviors are documented in the README's "Filtering notes" (#13); freshclam only runs when definitions are stale (>24h, checked via `daily.cld`/`daily.cvd` mtime across common DB dirs) or `-update` is passed, and after a successful update in clamd mode the daemon gets a `RELOAD` so new signatures actually take effect (#14). Everything in this review is now implemented except #8's streaming-discovery half.
 
+**#15 (2026-10-17, `fix/false-positives`):** clamd mode reported clean files as infected on a full home-directory scan. Reproduced against clamd 1.5.2: inside an IDSESSION, a `SCAN` of an unreadable or missing file gets two ERROR replies with the same request id. The client read one reply per command, so each duplicate shifted all later verdicts on that connection by one file. Real detections were attributed to neighbouring clean files (and quarantined), and the infected file itself could be counted as clean. Fix: `internal/clamd` tracks the session request id, skips replies for earlier ids, treats a reply for a later id or for a different path as a desync (reconnect + error), and no longer panics on a nil connection after a failed reconnect. Infected results now print the signature name.
+
 ## Priority summary
 
 | # | Priority | Issue | Impact |
@@ -26,6 +28,7 @@ Goal: make scans faster and make sure what we report as "scanned" is actually sc
 | 10 | P2 ✅ done | Walk errors and skips are swallowed silently | User can't tell what was never scanned |
 | 11 | P3 ✅ done | Dead code: `internal/pool` never imported; duplicate `ScanResult` | Maintenance noise |
 | 12 | P3 ✅ done | Per-file `getHomeDir()` / `os.Stat(dir)` calls, unused struct fields | Minor waste |
+| 15 | P0 ✅ done | clamd duplicate ERROR replies desync the IDSESSION reply stream | Clean files flagged and quarantined; real infections can be reported clean |
 
 ---
 

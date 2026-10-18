@@ -144,7 +144,7 @@ In clamd mode, scanning starts while discovery is still running, so the progress
 [*] Discovery complete: X files to scan (skipped N: 1 non-regular, 1 empty)
 ```
 
-- Files detected as infected are shown in red and quarantined immediately (`Quarantined: <file> -> ~/infected/<file>`)
+- Files detected as infected are shown in red with the matching signature (`File is infected: <file> (<signature>)`) and quarantined immediately (`Quarantined: <file> -> ~/infected/<file>`)
 - At the end of the scan you'll see performance statistics and per-verdict counts:
 
 ```bash
@@ -313,6 +313,18 @@ sudo ./bin/go-clam -d /var/www -d /etc
 **Note:** When running with sudo, the infected files will be moved to the root user's ~/infected directory, not your user's home directory.
 
 ## Troubleshooting
+
+### Clean Files Reported as Infected in clamd Mode
+
+Versions before this fix could flag clean files (README.md, `.go` sources, and similar) as infected during long `-clamd` scans that also hit unreadable or vanished files. clamd 1.5 answers a `SCAN` of such a file with **two** ERROR replies inside an IDSESSION. The old client read only one, so the leftover reply shifted every later verdict on that worker's connection onto the wrong file. A real detection could also be reported as clean.
+
+The client now matches every reply to its request id, discards duplicates, and accepts a verdict only when the reply names the scanned file. To double-check a reported hit, scan the original path through the daemon:
+
+```bash
+clamdscan --fdpass /path/to/flagged/file
+```
+
+Files quarantined by an affected version can be rescanned in `~/infected` with `clamscan ~/infected/*` and restored if clean.
 
 ### ClamAV Socket Connection Issues
 

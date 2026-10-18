@@ -74,10 +74,21 @@ var (
 
 // ScanResult represents the outcome of scanning a file
 type ScanResult struct {
-	File    string
-	IsClean bool
-	Message string
-	Error   error
+	File      string
+	IsClean   bool
+	Signature string // detection name when infected
+	Message   string
+	Error     error
+}
+
+// infectedMessage names the signature alongside the path, so a reported
+// detection can be checked against clamscan/clamdscan directly.
+func infectedMessage(r ScanResult) string {
+	msg := "File is infected: " + r.File
+	if r.Signature != "" {
+		msg += " (" + r.Signature + ")"
+	}
+	return msg
 }
 
 // define freshclam function and print the output to the console
@@ -366,6 +377,7 @@ func scanWithClamd(client *clamd.Client, file string) ScanResult {
 	// Only keep the raw reply when it matters; clean output is never
 	// printed and would just hold buffers alive in the result channel.
 	if !res.Clean {
+		sr.Signature = res.Virus
 		sr.Message = res.Raw
 	}
 	return sr
@@ -463,6 +475,9 @@ func runClamscanBatch(ctx context.Context, files []string, results chan<- ScanRe
 		result := ScanResult{File: file, IsClean: v == verdictClean}
 		if v != verdictClean {
 			result.Message = line
+		}
+		if v == verdictInfected {
+			result.Signature = strings.TrimSuffix(line[len(file)+2:], " FOUND")
 		}
 		if v == verdictError {
 			result.Error = fmt.Errorf("clamscan: %s", line)
@@ -667,7 +682,7 @@ func main() {
 				progressTracker.LogResult("File is clean: "+result.File, true, false)
 			} else {
 				infectedCount++
-				progressTracker.LogResult("File is infected: "+result.File, false, false)
+				progressTracker.LogResult(infectedMessage(result), false, false)
 				if *verbose {
 					fmt.Println(result.Message)
 				}
