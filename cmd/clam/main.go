@@ -32,6 +32,7 @@ var (
 	verbose       = flag.Bool("v", false, "Enable verbose output")
 	useClamd      = flag.Bool("clamd", false, "Use clamd socket instead of clamscan (faster)")
 	clamdSocket   = flag.String("socket", "/var/run/clamav/clamd.sock", "Path to clamd socket")
+	fdPass        = flag.Bool("fdpass", true, "In clamd mode, open files here and pass the descriptor to clamd, so clamd needs no access of its own (use -fdpass=false to send paths)")
 	excludeExt    multiStringFlag // Add exclude extensions flag
 	includeExt    multiStringFlag // Add include extensions flag
 	maxFileSize   = flag.Int64("max-size", 100, "Maximum file size to scan in MB (0 for unlimited)")
@@ -356,14 +357,20 @@ func findFilesToScan(dirs []string, infectedDir string) ([]string, discoveryStat
 }
 
 // scanWithClamd scans one file over an established clamd connection - no
-// subprocess and no per-file reconnect.
-func scanWithClamd(client *clamd.Client, file string) ScanResult {
+// subprocess and no per-file reconnect. With passFD the file is opened here
+// and its descriptor handed to clamd; otherwise clamd opens the path itself.
+func scanWithClamd(client *clamd.Client, file string, passFD bool) ScanResult {
 	absFile, err := filepath.Abs(file)
 	if err != nil {
 		absFile = file // fallback to original
 	}
 
-	res, err := client.Scan(absFile)
+	var res clamd.Result
+	if passFD {
+		res, err = client.ScanFile(absFile)
+	} else {
+		res, err = client.Scan(absFile)
+	}
 	if err != nil {
 		return ScanResult{
 			File:    file,
@@ -553,6 +560,9 @@ func main() {
 		}
 		client.Close()
 		fmt.Println(yellow("[*]"), "Using clamd socket at:", *clamdSocket)
+		if *fdPass {
+			fmt.Println(yellow("[*]"), "Passing open files to clamd (FILDES); clamd needs no file access of its own")
+		}
 		// clamd's limits come from clamd.conf, not from our flags
 		if *maxFileSize == 0 || *maxFileSize > 25 {
 			fmt.Println(yellow("[*]"), "Note: clamd's MaxFileSize/MaxScanSize (clamd.conf, default ~25MB) still apply - larger files may be only partially scanned")
@@ -724,7 +734,7 @@ func main() {
 				defer client.Close()
 
 				for file := range workerPool {
-					result := scanWithClamd(client, file)
+					result := scanWithClamd(client, file, *fdPass)
 					select {
 					case resultChan <- result:
 					case <-ctx.Done():

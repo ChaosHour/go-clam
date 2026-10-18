@@ -7,8 +7,10 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Client is a single clamd connection running an IDSESSION. It is not safe
@@ -52,13 +54,14 @@ func (c *Client) connect() error {
 }
 
 // command sends one null-terminated command and returns the reply carrying
-// its request id. clamd numbers the commands of an IDSESSION from 1, and
+// its request id. When f is non-nil its descriptor follows the command as
+// SCM_RIGHTS ancillary data, as FILDES expects. clamd numbers the commands of an IDSESSION from 1, and
 // can send more than one reply for a single request: clamd 1.5 answers a
 // SCAN of an unreadable or vanished file with two ERROR lines. Replies for
 // earlier requests are therefore discarded rather than taken as this
 // command's answer. Without that, one stray reply would shift every later
 // verdict on the connection onto the wrong file.
-func (c *Client) command(cmd string) (string, error) {
+func (c *Client) command(cmd string, f *os.File) (string, error) {
 	if c.conn == nil {
 		if err := c.connect(); err != nil {
 			return "", err
@@ -68,6 +71,16 @@ func (c *Client) command(cmd string) (string, error) {
 	want := c.lastID
 	if _, err := c.conn.Write([]byte("z" + cmd + "\x00")); err != nil {
 		return "", err
+	}
+	if f != nil {
+		uc, ok := c.conn.(*net.UnixConn)
+		if !ok {
+			return "", fmt.Errorf("descriptor passing needs a Unix socket")
+		}
+		// clamd reads one dummy byte that carries the descriptor
+		if _, _, err := uc.WriteMsgUnix([]byte{0}, syscall.UnixRights(int(f.Fd())), nil); err != nil {
+			return "", err
+		}
 	}
 	for {
 		reply, err := c.br.ReadString(0)
@@ -89,7 +102,7 @@ func (c *Client) command(cmd string) (string, error) {
 
 // Ping checks that clamd is alive and answering on the socket.
 func (c *Client) Ping() error {
-	reply, err := c.command("PING")
+	reply, err := c.command("PING", nil)
 	if err != nil {
 		return err
 	}
@@ -102,7 +115,7 @@ func (c *Client) Ping() error {
 // Reload asks clamd to reload the virus database, so freshly downloaded
 // definitions take effect without restarting the daemon.
 func (c *Client) Reload() error {
-	reply, err := c.command("RELOAD")
+	reply, err := c.command("RELOAD", nil)
 	if err != nil {
 		return err
 	}
@@ -118,23 +131,63 @@ func (c *Client) Reload() error {
 // verdict is only returned when the reply names path itself, so a reply
 // can never be attributed to a different file.
 func (c *Client) Scan(path string) (Result, error) {
-	reply, err := c.command("SCAN " + path)
+	reply, err := c.retry("SCAN "+path, nil)
 	if err != nil {
-		c.Close()
-		if rerr := c.connect(); rerr != nil {
-			return Result{}, err
-		}
-		reply, err = c.command("SCAN " + path)
-		if err != nil {
-			c.Close()
-			return Result{}, err
-		}
+		return Result{}, err
 	}
 	if !strings.HasPrefix(reply, path+": ") {
 		c.Close()
 		return Result{Raw: reply}, fmt.Errorf("clamd reply does not match scanned file: %q", reply)
 	}
 	return parseReply(reply)
+}
+
+// ScanFile opens path itself and passes the open descriptor to clamd
+// (FILDES), so clamd scans whatever this process can read. That covers
+// files clamd cannot open on its own, such as those behind macOS privacy
+// protection (~/Library/Mail, ~/Library/Messages, ...) when the daemon
+// lacks Full Disk Access. An open failure is reported without contacting
+// clamd. Verdicts are returned with the "fd[N]" clamd puts in place of a
+// file name replaced by path.
+func (c *Client) ScanFile(path string) (Result, error) {
+	// O_NONBLOCK keeps a file swapped for a FIFO since discovery from
+	// blocking the open; it has no effect on regular files.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return Result{}, err
+	}
+	defer f.Close()
+
+	reply, err := c.retry("FILDES", f)
+	if err != nil {
+		return Result{}, err
+	}
+	i := strings.Index(reply, "]: ")
+	if !strings.HasPrefix(reply, "fd[") || i == -1 {
+		c.Close()
+		return Result{Raw: reply}, fmt.Errorf("unexpected clamd reply to FILDES: %q", reply)
+	}
+	return parseReply(path + reply[i+1:])
+}
+
+// retry runs a scan command, reconnecting once if the session was dropped
+// (idle timeout, daemon reload) or got out of step. The connection is
+// closed after a second failure so the next call starts a fresh session.
+func (c *Client) retry(cmd string, f *os.File) (string, error) {
+	reply, err := c.command(cmd, f)
+	if err == nil {
+		return reply, nil
+	}
+	c.Close()
+	if rerr := c.connect(); rerr != nil {
+		return "", err
+	}
+	reply, err = c.command(cmd, f)
+	if err != nil {
+		c.Close()
+		return "", err
+	}
+	return reply, nil
 }
 
 // Close ends the session and closes the connection.

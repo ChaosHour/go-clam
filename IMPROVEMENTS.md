@@ -12,6 +12,8 @@ Goal: make scans faster and make sure what we report as "scanned" is actually sc
 
 **#15 (2026-10-17, `fix/false-positives`):** clamd mode reported clean files as infected on a full home-directory scan. Reproduced against clamd 1.5.2: inside an IDSESSION, a `SCAN` of an unreadable or missing file gets two ERROR replies with the same request id. The client read one reply per command, so each duplicate shifted all later verdicts on that connection by one file. Real detections were attributed to neighbouring clean files (and quarantined), and the infected file itself could be counted as clean. Fix: `internal/clamd` tracks the session request id, skips replies for earlier ids, treats a reply for a later id or for a different path as a desync (reconnect + error), and no longer panics on a nil connection after a failed reconnect. Infected results now print the signature name.
 
+**#16 (2026-10-17, `feature/fdpass`):** most of the ~96k errors in a full home-directory `-clamd` scan were clamd being refused by macOS privacy protection (TCC): the Homebrew clamd service has no Full Disk Access, so `SCAN <path>` failed for `~/Library/Mail`, `Messages`, `Safari`, and the like, while `clamdscan --fdpass` on the same files worked. clamd mode now opens each file in go-clam and passes the descriptor with `FILDES` (SCM_RIGHTS) by default; the `fd[N]` in clamd's reply is replaced by the scanned path, and request-id tracking from #15 keeps the session in step. Files go-clam itself cannot open fail locally without a clamd round trip. `-fdpass=false` restores path-based `SCAN`. On `~/Library/Safari`, errors went from 49 to 0.
+
 ## Priority summary
 
 | # | Priority | Issue | Impact |
@@ -29,6 +31,7 @@ Goal: make scans faster and make sure what we report as "scanned" is actually sc
 | 11 | P3 ✅ done | Dead code: `internal/pool` never imported; duplicate `ScanResult` | Maintenance noise |
 | 12 | P3 ✅ done | Per-file `getHomeDir()` / `os.Stat(dir)` calls, unused struct fields | Minor waste |
 | 15 | P0 ✅ done | clamd duplicate ERROR replies desync the IDSESSION reply stream | Clean files flagged and quarantined; real infections can be reported clean |
+| 16 | P1 ✅ done | clamd opens files itself and is blocked by macOS privacy protection | Large parts of a home-directory scan silently become errors instead of being scanned |
 
 ---
 

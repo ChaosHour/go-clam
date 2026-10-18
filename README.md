@@ -248,6 +248,8 @@ The `-clamd` option significantly improves scanning speed, but requires proper s
    # ./bin/go-clam -clamd -socket=$(/usr/local/var/run/clamav/clamd.sock) -d /path/to/scan
 ```
 
+**File access in clamd mode:** by default go-clam opens each file itself and passes the open descriptor to clamd (the protocol's `FILDES` command, the same thing `clamdscan --fdpass` does). clamd therefore scans exactly what *you* can read, and needs no permissions of its own. This matters on macOS, where privacy protection (TCC) blocks the Homebrew clamd service from `~/Library/Mail`, `~/Library/Messages`, `~/Library/Safari`, and similar folders even though it runs as your user. Use `-fdpass=false` to send paths instead and let clamd open the files, for example when clamd runs as a dedicated user that should only see what it is allowed to.
+
 ### Setting up clamd on Linux
 
 1. Install ClamAV and the daemon:
@@ -325,6 +327,16 @@ clamdscan --fdpass /path/to/flagged/file
 ```
 
 Files quarantined by an affected version can be rescanned in `~/infected` with `clamscan ~/infected/*` and restored if clean.
+
+### Many "Operation not permitted" / "Can't open file" Errors in clamd Mode
+
+With `-fdpass=false`, clamd opens every file itself. On macOS the daemon lacks Full Disk Access, so a home-directory scan reports thousands of errors such as:
+
+```text
+[!] Error scanning: clamd: ~/Library/Safari/...: File path check failure: Operation not permitted. ERROR
+```
+
+Keep the default `-fdpass` so go-clam opens the files and hands them to clamd. Alternatively, grant clamd Full Disk Access (System Settings → Privacy & Security → Full Disk Access, add `/usr/local/Cellar/clamav/<version>/sbin/clamd`, then `brew services restart clamav`), but that has to be redone after each `brew upgrade clamav`. Remaining `open …: permission denied` errors with `-fdpass` are files your own user cannot read; run as root only if you need those.
 
 ### ClamAV Socket Connection Issues
 
@@ -407,6 +419,9 @@ Usage of go-clam:
         Use clamd socket instead of clamscan (faster)
   -socket string
         Path to clamd socket (default "/var/run/clamav/clamd.sock")
+  -fdpass
+        In clamd mode, open files here and pass the descriptor to clamd, so
+        clamd needs no access of its own (default true; -fdpass=false sends paths)
   -concurrency int
         Number of concurrent scans (0 = auto)
   -exclude value
